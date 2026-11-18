@@ -30,9 +30,11 @@ const args = Object.fromEntries(process.argv.slice(2).reduce((acc, arg, i, all) 
 }, []));
 const executablePath = args.browser ?? '/Applications/Helium.app/Contents/MacOS/Helium';
 const extension = path.join(root, 'build/extension');
-// A new profile per run, under .connector-test-profiles/, never removed by
-// this script (inspect or delete them by hand).
-const profile = path.join(root, '.connector-test-profiles', new Date().toISOString().replace(/[:.]/g, '-'));
+// A new profile per run, under .connector-test-profiles/ (or the directory
+// --profile-root names), never removed by this script (inspect or delete
+// them by hand).
+const profile = path.join(args['profile-root'] ? path.resolve(args['profile-root']) : path.join(root, '.connector-test-profiles'),
+  new Date().toISOString().replace(/[:.]/g, '-'));
 const port = Number(args.port ?? 5190);
 const dappUrl = `http://localhost:${port}/`;
 const otherOrigin = `http://127.0.0.1:${port}/`;
@@ -106,7 +108,7 @@ try {
   await must('saveSettings', { network: 'undeployed', endpoints: { ...settings.endpoints.undeployed, ...devnet, prover } });
   await must('selectNetwork', { network: 'undeployed' });
   const { words } = await must('generateMnemonic');
-  const created = await must('createWallet', { mnemonic: words.join(' '), password: PASSWORD });
+  const created = await must('createWallet', { mnemonic: words.join(' '), password: PASSWORD, restore: false });
   await untilSynced('new wallet');
   log('wallet', JSON.stringify(created.addresses), 'prover', JSON.stringify(prover));
 

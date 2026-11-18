@@ -152,6 +152,11 @@ Details:
   bind, and return the sealed transaction. The dApp submits it, through
   `submitTransaction` or any other route. The wallet notes the transaction with
   the site, so the history names the site either way.
+- **Swap offers in Activity.** An offer made by `makeIntent` shows in Activity as
+  "Swap offer for" the site's host, with status Offered until a counterparty's
+  transaction including it reaches the chain (it then reads as any other
+  transaction) and Expired once its coins are released unused. Until then it holds
+  the whole coins it spends, change included, so less is available to send.
 - **`makeIntent`** puts an unshielded swap in segment 1. `intentId` of `1` or
   `"random"` is accepted and anything else is `InvalidRequest` (the SDK's
   `initSwap` takes no id, so the wallet refuses instead of ignoring it).
@@ -244,6 +249,15 @@ sequenceDiagram
 - **Private data.** A preimage carries the user's private inputs. The wallet does
   not log or store it; it only hands it to the prover. With a proof server, the
   preimage and key material go to that server.
+- **Checked before the queue.** With the WASM prover, every check and prove is
+  first checked in the engine with the circuit runtime's own `check` (the
+  function the SDK's proof worker runs). The SDK's proof worker answers a failed
+  check or prove with nothing at all, so the caller would wait for the SDK's
+  10-minute deadline while every other proof waits behind it. A preimage that
+  does not satisfy its circuit is refused in milliseconds with the runtime's
+  message and never enters the queue. A prove that fails after its check passed
+  still waits for the deadline. With a proof server, the server answers a failed
+  proof itself.
 - **Free of a window.** A call is not asked about, but it is limited: only a
   connected page may upload, and while a proof runs the popup shows the wallet
   busy.
@@ -264,15 +278,21 @@ Errors reach the page as `Error`s with `type: "DAppConnectorAPIError"` and a
 
 ## Limits
 
-- One transaction is balanced, proved or submitted at a time. A second request
-  while one is running fails with a "busy" message.
+- One transaction is balanced, proved or submitted at a time. A site's request
+  that finds the wallet busy waits its turn, in order, for up to 15 minutes, and
+  then fails with a message saying so; a request from the popup is refused at
+  once.
 - Proofs of the wallet and of dApps share one queue. A dApp's contract call
   waits behind a send, and the in-browser prover is slow; see
   [Proving](technical.md#proving).
 - `makeIntent` supports segment 1 only. `signData` supports the unshielded key
   only. `getTxHistory` has no per-segment status.
 - The connector object is installed in top-level frames only.
-- Approval windows name custom tokens by their short type.
+- Approval windows name a custom token by your label for it, or by its short
+  type when it has none (see [Custom tokens](technical.md#custom-tokens)).
+- With the WASM prover, a proof that fails after its circuit check passed (a
+  prover key that does not belong to its circuit) is not reported by the SDK's
+  prover for 10 minutes, and holds up the proof queue that long.
 
 ## The local test dApp
 

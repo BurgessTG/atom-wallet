@@ -18,6 +18,7 @@ import {
 import * as db from './db.js';
 import * as vault from './vault.js';
 import * as midnight from './midnight.js';
+import * as birthdays from './birthday.js';
 import * as tokens from './tokens.js';
 import { makeConnector } from './connector.js';
 
@@ -26,9 +27,15 @@ const PREVIEW_LIFETIME_MS = 10 * 60 * 1000;
 const PUBLISH_EVERY_MS = 250;
 
 // ---------------------------------------------------------------- state ---
-const idleSync = () => ({ status: 'idle', error: null, percent: 0, parts: { shielded: { percent: 0 }, unshielded: { percent: 0 }, dust: { percent: 0 } }, tip: null });
+// `start` says where each wallet part of the running session started from
+// (see midnight.openWallet): shielded `{ from: 'snapshot' | 'birthday' |
+// 'start', reason }`, unshielded and DUST 'snapshot' or 'fresh'.
+const idleSync = () => ({
+  status: 'idle', error: null, percent: 0, parts: { shielded: { percent: 0 }, unshielded: { percent: 0 }, dust: { percent: 0 } }, tip: null,
+  start: null, refreshing: false,
+});
 const state = {
-  network: DEFAULT_NETWORK, networks: [], hasWallet: false, locked: false, addresses: null,
+  network: DEFAULT_NETWORK, networks: [], hasWallet: false, locked: false, addresses: null, birthday: null, birthdayNote: null,
   sync: idleSync(), busy: null, waiting: [], prover: { kind: 'wasm', url: '' },
 };
 let store = db.forNetwork(DEFAULT_NETWORK);   // the selected network's database
@@ -69,6 +76,9 @@ async function reflect() {
   state.hasWallet = !!w;
   state.locked = !!w && !unlocked.has(store.network);
   state.addresses = w ? { unshielded: w.addresses.unshielded, shielded: w.addresses.shielded, dust: w.addresses.dust } : null;
+  // Wallets made before birthdays existed have none: they scan from the start.
+  state.birthday = w?.birthday ?? null;
+  state.birthdayNote = w?.birthdayNote ?? null;
   state.prover = (await endpointsFor(store.network)).prover;
   state.networks = await Promise.all(NETWORK_IDS.map(async id => ({
     id, name: NETWORKS[id].name, hasWallet: id === store.network ? !!w : !!(await db.forNetwork(id).get('wallet')),
@@ -105,7 +115,7 @@ async function startSession() {
   if (session || !state.hasWallet || state.locked) return;
   clearTimeout(retryTimer);
   const network = store.network;
-  const run = { network, wallet: null, latest: null, subscription: null, timers: [], stopped: false, saving: null };
+  const run = { network, wallet: null, latest: null, subscription: null, timers: [], stopped: false, saving: null, everSynced: false };
   session = run;
   state.sync = { ...idleSync(), status: 'connecting' };
   publish();
@@ -128,12 +138,25 @@ async function startSession() {
     };
     tip();
     run.timers.push(setInterval(tip, 30000));
+    // The SDK retries a query the indexer does not offer forever, without
+    // saying so: an indexer that lacks one of the wallet's queries (an older
+    // or third-party one) is named here instead of syncing without end.
+    const missing = await birthdays.missingQueries(urls.indexerHttp);
+    if (missing?.length) {
+      throw Object.assign(new Error(`The indexer at ${endpoints.indexerHttp} does not offer ${missing.join(', ')}, which this wallet's sync needs`), { permanent: true });
+    }
     const keys = unlocked.get(network);
     const stored = await store.get('snapshot');
     let resume = null;
     if (stored && stored.indexerHttp === endpoints.indexerHttp) resume = await vault.decryptJson(keys.key, stored.box);
-    run.wallet = await midnight.openWallet({ network, endpoints, seed: vault.fromHex(keys.seedHex), snapshot: resume });
+    const record = await store.get('wallet');
+    run.wallet = await midnight.openWallet({
+      network, endpoints, seed: vault.fromHex(keys.seedHex), snapshot: resume, birthday: record?.birthday ?? null,
+    });
     if (run.stopped) { await run.wallet.stop().catch(() => {}); return; }
+    state.sync.start = {
+      shielded: run.wallet.shieldedStart, unshielded: run.wallet.started.unshielded, dust: run.wallet.started.dust,
+    };
     run.indexerHttp = endpoints.indexerHttp;
     run.subscription = run.wallet.facade.state().subscribe({
       next: s => onState(run, s),
@@ -147,11 +170,68 @@ function onState(run, s) {
   if (session !== run) return;
   const wasSynced = run.latest?.isSynced;
   run.latest = s;
-  state.sync = { ...state.sync, ...midnight.syncOf(s), error: null };
+  const sync = midnight.syncOf(s);
+  if (s.isSynced) run.everSynced = true;
+  // The DUST wallet re-reads its state in a pass every 30 seconds (see
+  // midnight.FastDustWallet), and while a pass runs the SDK reports DUST as
+  // not quite synced (its progress counts the pass's work, not blocks). Once
+  // the session has been synced, such a pass is a refresh rather than a
+  // catch-up: the wallet stays 'synced', with `refreshing` set, instead of
+  // the pill dropping to a percentage and back every half minute.
+  const refreshing = run.everSynced && !s.isSynced && midnight.onlyDustBehind(s);
+  // While catching up, a figure never goes back: the DUST pass's total grows
+  // as it finds more coins to check, which would otherwise read as progress
+  // lost.
+  const ahead = (before, now) => (state.sync.status === 'syncing' && now < 100 ? Math.max(before ?? 0, now) : now);
+  state.sync = refreshing
+    ? { ...state.sync, status: 'synced', percent: 100, parts: { ...sync.parts, dust: { percent: 100 } }, refreshing: true, error: null }
+    : {
+      ...state.sync, ...sync, refreshing: false, error: null,
+      percent: ahead(state.sync.percent, sync.percent),
+      parts: Object.fromEntries(Object.entries(sync.parts).map(([k, p]) => [k, { percent: ahead(state.sync.parts?.[k]?.percent, p.percent) }])),
+    };
   if (s.isSynced) retryDelay = 2000;
+  refreshDustWhileBooked(run, s);
   // Save as soon as the first sync completes: that is the expensive part.
   if (s.isSynced && !wasSynced) saveSnapshot(run);
   publish();
+}
+
+// While a transaction of this wallet holds DUST coins booked, the DUST wallet
+// is asked for a pass every few seconds instead of every 30 (see
+// midnight.refreshDust), so the change of a fee is known, and spendable, as
+// soon as the transaction is on chain. Quick passes stop DUST_REFRESH_FOR_MS
+// after the last new booking: a booking that outlasts that is not waiting for
+// a block (a swap offer holds its coins until it is taken or expires) and is
+// left to the regular passes.
+const DUST_REFRESH_MS = 3000;
+const DUST_REFRESH_FOR_MS = 2 * 60 * 1000;
+function refreshDustWhileBooked(run, s) {
+  const count = s.dust.pendingCoins.length;
+  const more = count > (run.dustBooked ?? 0);
+  run.dustBooked = count;
+  if (!count) {
+    run.dustBookedSince = null;
+    stopDustRefresh(run);
+    return;
+  }
+  // A new booking (another fee) starts the quick passes again.
+  if (more) run.dustBookedSince = Date.now();
+  if (run.dustRefresh || Date.now() - run.dustBookedSince > DUST_REFRESH_FOR_MS) return;
+  let busy = false;
+  run.dustRefresh = setInterval(async () => {
+    if (session !== run || Date.now() - run.dustBookedSince > DUST_REFRESH_FOR_MS) { stopDustRefresh(run); return; }
+    if (busy) return;
+    busy = true;
+    try { await midnight.refreshDust(run.wallet); } finally { busy = false; }
+  }, DUST_REFRESH_MS);
+  run.timers.push(run.dustRefresh);
+}
+function stopDustRefresh(run) {
+  if (!run.dustRefresh) return;
+  clearInterval(run.dustRefresh);
+  run.timers.splice(run.timers.indexOf(run.dustRefresh), 1);
+  run.dustRefresh = null;
 }
 
 function sessionFailed(run, error) {
@@ -160,8 +240,9 @@ function sessionFailed(run, error) {
   session = null;
   state.sync = { ...state.sync, status: 'error', error: String(error?.message ?? error) };
   publish();
-  // A missing Blockfrost project id does not fix itself by retrying.
-  if (/Blockfrost project id/.test(state.sync.error)) return;
+  // A missing Blockfrost project id, or a query the indexer does not offer,
+  // does not fix itself by retrying.
+  if (error?.permanent || /Blockfrost project id/.test(state.sync.error)) return;
   retryTimer = setTimeout(startSession, retryDelay);
   retryDelay = Math.min(retryDelay * 2, 60000);
 }
@@ -210,7 +291,10 @@ async function live() {
 
 async function synced() {
   const { run, wallet: w } = await live();
-  if (!run.latest?.isSynced) {
+  // A DUST refresh pass (see onState) does not hold up a transaction: until
+  // the pass ends, the DUST state is the one the previous pass applied, which
+  // is what the transaction would be balanced against without it.
+  if (!run.latest?.isSynced && !(run.everSynced && midnight.onlyDustBehind(run.latest))) {
     await firstValueFrom(w.facade.state().pipe(filter(s => s.isSynced), timeout(10000))).catch(() => {
       throw new Error('Wait until the wallet is synced');
     });
@@ -292,14 +376,44 @@ async function withBusy(kind, stage, fn, { wait = false, ticket = null } = {}) {
 }
 
 // ---------------------------------------------------------------- wallet ---
-async function createWallet({ mnemonic, password }) {
+/**
+ * Where a new or restored wallet's shielded sync starts: `{ birthday, note }`
+ * with `birthday` null for the start of the chain (see birthday.js). A new
+ * wallet (`restore` false) is born at the chain's tip: its phrase was made
+ * just now, so nothing can have been sent to it before. If the indexer
+ * cannot say where the tip is, it is born at the start instead (correct, only
+ * slower) and `note` says why. A restored wallet is born at `date`
+ * (YYYY-MM-DD) or, without one, at the start; a date the indexer cannot
+ * place is refused, since the user asked for it.
+ */
+async function birthdayFor(restore, date) {
+  if (restore && !date) return { birthday: null, note: null };
+  if (!restore && date) throw new Error('A wallet birthday is for restoring a wallet');
+  if (date) birthdays.birthdayInstant(date);   // a malformed or future date, before any network
+  let indexerHttp;
+  try { indexerHttp = connectionUrls(store.network, await endpointsFor(store.network)).indexerHttp; } catch (error) {
+    if (restore) throw error;
+    return { birthday: null, note: `The chain tip could not be read (${error.message}), so the wallet scans from the start of the chain` };
+  }
+  try {
+    return { birthday: await birthdays.birthdayBlock(indexerHttp, restore ? date : null), note: null };
+  } catch (error) {
+    if (restore) throw new Error(`The indexer could not place the wallet birthday: ${error.message}`);
+    return { birthday: null, note: `The chain tip could not be read (${error.message}), so the wallet scans from the start of the chain` };
+  }
+}
+
+async function createWallet({ mnemonic, password, restore = false, birthday: date = null }) {
   if (await store.get('wallet')) throw new Error(`A wallet already exists on ${net().name}`);
   if (!password || password.length < 8) throw new Error('Use a password of at least 8 characters');
   const seed = await midnight.seedFromMnemonic(mnemonic);
   const seedHex = vault.toHex(seed);
   const addresses = midnight.deriveAddresses(seed, store.network);
+  const { birthday, note } = await birthdayFor(!!restore, date || null);
   const sealed = await vault.seal(seedHex, password);
-  await store.put('wallet', { network: store.network, sealed, addresses, createdAt: Date.now() });
+  await store.put('wallet', {
+    network: store.network, sealed, addresses, createdAt: Date.now(), birthday, ...(note ? { birthdayNote: note } : {}),
+  });
   await store.delete('snapshot');
   await store.delete('txmeta');
   unlocked.set(store.network, { seedHex, key: await vault.recordKey(seedHex, store.network) });
@@ -355,9 +469,20 @@ async function resetWallet({ password }) {
   return snapshot();
 }
 
-async function rescan() {
+/**
+ * Syncs the wallet again without its snapshot. The shielded wallet starts at
+ * the wallet birthday again; with `fromStart` the birthday is removed first,
+ * so it scans the whole chain (for a birthday that turned out to be later
+ * than the wallet's first shielded coin).
+ */
+async function rescan({ fromStart = false } = {}) {
   await live().catch(error => { if (error.locked || !state.hasWallet) throw error; });
   await stopSession({ save: false });
+  if (fromStart) {
+    const record = { ...(await wallet()), birthday: null };
+    delete record.birthdayNote;
+    await store.put('wallet', record);
+  }
   await store.delete('snapshot');
   await reflect();
   publish();
@@ -427,8 +552,8 @@ const ui = {
       ? { shielded: session.latest.shielded.balances, unshielded: session.latest.unshielded.balances } : null),
   }),
   overview: async () => {
-    const { wallet: w, s } = await live();
-    return midnight.overviewOf(s, w.networkId);
+    const { run, wallet: w, s } = await live();
+    return { ...midnight.overviewOf(s, w.networkId, new Date(), run), birthday: state.birthday };
   },
   checkAddress: async ({ address }) => midnight.checkAddress(net().networkId, address),
   previewSend: async ({ outputs }) => {
@@ -489,7 +614,7 @@ const ui = {
   settings: async () => {
     const s = await settings();
     return {
-      network: store.network,
+      network: store.network, birthday: state.birthday,
       endpoints: Object.fromEntries(NETWORK_IDS.map(id => [id, endpointsOf(id, s.endpoints[id])])),
       defaults: Object.fromEntries(NETWORK_IDS.map(id => [id, defaultEndpoints(id)])),
     };

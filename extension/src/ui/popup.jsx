@@ -16,11 +16,11 @@ import { Loader } from '@cloudflare/kumo/components/loader';
 import { Toasty, useKumoToastManager } from '@cloudflare/kumo/components/toast';
 import { Mark, NETWORK_LOOK } from './brand.jsx';
 import {
-  ActionFooter, BottomNav, Field, Heading, MainHeader, NavItem, NetworkPill, Notice, OnboardingHeader, PageHeader, PasswordField,
+  ActionFooter, BottomNav, DateField, Field, Heading, MainHeader, NavItem, NetworkPill, Notice, OnboardingHeader, PageHeader, PasswordField,
   PrimaryButton, Screen, SecondaryButton, Section, SeedWord, SyncPill, Viewport, WalletIdentity,
 } from './components.jsx';
 import { ui, onState } from './api.js';
-import { networkName, plural } from './format.js';
+import { localDay, networkName, plural } from './format.js';
 import { Home } from './home.jsx';
 import { Receive } from './receive.jsx';
 import { Send } from './send.jsx';
@@ -149,6 +149,7 @@ function Onboarding({ state, name }) {
   const [mode, setMode] = useState(null);
   const [generated, setGenerated] = useState(null);
   const [words, setWords] = useState('');
+  const [birthday, setBirthday] = useState('');
   const [saved, setSaved] = useState(false);
   const [password, setPassword] = useState('');
   const [confirm, setConfirm] = useState('');
@@ -165,14 +166,20 @@ function Onboarding({ state, name }) {
     setBusy(true); setError(null);
     try {
       const phrase = mode === 'new' ? generated : words.trim().split(/\s+/);
-      await ui('createWallet', { mnemonic: phrase.join(' '), password });
+      await ui('createWallet', {
+        mnemonic: phrase.join(' '), password, restore: mode === 'restore',
+        ...(mode === 'restore' && birthday ? { birthday } : {}),
+      });
     } catch (e) { setError(e.message); } finally { setBusy(false); }
   };
 
   if (!mode) return <Welcome state={state} name={name} onPick={pick} />;
   const mismatch = confirm.length > 0 && confirm !== password;
   const wordCount = words.trim() ? words.trim().split(/\s+/).length : 0;
-  const ready = password.length >= 8 && confirm === password && (mode === 'new' ? generated && saved : wordCount >= 12);
+  // The picker is bounded to today; a typed date past it is refused too.
+  const today = localDay(Date.now());
+  const futureBirthday = birthday !== '' && birthday > today;
+  const ready = password.length >= 8 && confirm === password && (mode === 'new' ? generated && saved : wordCount >= 12 && !futureBirthday);
   const protect = (
     <Section title="Protect this wallet" gap="gap-3">
       <PasswordField label="Password" value={password} onChange={e => setPassword(e.target.value)} autoComplete="new-password"
@@ -198,15 +205,21 @@ function Onboarding({ state, name }) {
               ) : <div className="flex justify-center py-6"><Loader /></div>}
             </div>
             <Checkbox label={<span className="text-[13px]">I wrote down all 24 words</span>} checked={saved} onCheckedChange={setSaved} />
+            <p className="text-xs leading-normal text-kumo-subtle">
+              The new wallet starts at the current block of {name}: nothing can have been sent to it before, so it skips the chain's history.
+            </p>
             {protect}
           </>
         ) : (
           <>
-            <Heading title={`Restore a ${name} wallet`} subtitle="Enter your recovery phrase. The wallet syncs from the start of the chain to find your funds." />
+            <Heading title={`Restore a ${name} wallet`} subtitle="Enter your recovery phrase. The wallet reads the chain to find your funds." />
             <Field label="Recovery phrase" htmlFor="phrase" description={plural(wordCount, 'word')}>
               <InputArea id="phrase" placeholder="Words separated by spaces" rows={4} value={words} onValueChange={setWords} spellCheck={false}
                 className="h-24 resize-none rounded-[10px] bg-kumo-control px-3.5 py-[11px] font-mono text-[13px] leading-normal" />
             </Field>
+            <DateField label="Wallet birthday" hint="Optional" value={birthday} max={today} onChange={e => setBirthday(e.target.value)}
+              error={futureBirthday ? 'The birthday cannot be in the future' : null}
+              description="Leave empty to scan the whole chain. Shielded tokens received before this date will not be found." />
             {protect}
           </>
         )}

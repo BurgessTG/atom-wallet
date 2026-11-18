@@ -3,7 +3,7 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import qrcode from 'qrcode-generator';
 import {
-  ArrowLeftIcon, ArrowsClockwiseIcon, CaretDownIcon, CaretRightIcon, CheckIcon,
+  ArrowLeftIcon, ArrowsClockwiseIcon, CalendarBlankIcon, CaretDownIcon, CaretRightIcon, CheckIcon,
   ClipboardTextIcon, CopyIcon, EyeIcon, EyeSlashIcon, MoonIcon, PlusCircleIcon, WarningCircleIcon,
 } from '@phosphor-icons/react';
 import { Badge } from '@cloudflare/kumo/components/badge';
@@ -466,6 +466,20 @@ export function PasswordField({ label = 'Password', autoComplete = 'current-pass
         <InputGroup.Addon align="end">
           <IconButton icon={shown ? EyeSlashIcon : EyeIcon} label={shown ? 'Hide password' : 'Show password'} size={32}
             className="text-kumo-subtle" onClick={() => setShown(s => !s)} />
+        </InputGroup.Addon>
+      )} />
+  );
+}
+
+/** Date input (YYYY-MM-DD) whose calendar button opens the native picker. */
+export function DateField(props) {
+  const ref = useRef(null);
+  return (
+    <TextField type="date" inputRef={ref} {...props} className="[&::-webkit-calendar-picker-indicator]:hidden"
+      trailing={(
+        <InputGroup.Addon align="end">
+          <IconButton icon={CalendarBlankIcon} label="Pick a date" size={32} className="text-kumo-subtle"
+            onClick={() => ref.current?.showPicker?.()} />
         </InputGroup.Addon>
       )} />
   );

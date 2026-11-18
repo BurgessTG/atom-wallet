@@ -277,9 +277,11 @@ export function makeConnector(engine) {
     getShieldedBalances: async () => decimals((await ready()).s.shielded.balances),
     getUnshieldedBalances: async () => decimals((await ready()).s.unshielded.balances),
     getDustBalance: async () => {
-      const { s } = await ready();
+      const { run, s } = await ready();
       return {
-        balance: s.dust.balance(new Date()).toString(),
+        // Right after a fee is paid, the last DUST figure seen until the DUST
+        // wallet's next pass learns the change (see midnight.dustBalanceOf).
+        balance: midnight.dustBalanceOf(s, run).balance.toString(),
         // The cap of the NIGHT the wallet still holds: DUST whose backing
         // NIGHT is spent only decays.
         cap: s.dust.totalCoins.filter(c => c.dtime === undefined).reduce((a, c) => a + c.maxCap, 0n).toString(),

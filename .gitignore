@@ -5,3 +5,4 @@ node_modules/
 .browser-test-profile/
 .connector-test-profile*/
 .integration-test-profiles/
+.fastsync-test-profiles/

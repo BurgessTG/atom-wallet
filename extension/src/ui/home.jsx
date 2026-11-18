@@ -28,7 +28,7 @@ function DustCard({ dust: d, onOpen }) {
       <span className="flex w-full items-center gap-2">
         <DropIcon size={14} className="text-accent-fg" />
         <span className="flex-1 text-[13px] font-semibold text-kumo-default tabular-nums">
-          {dust(d.balance)} <span className="font-medium text-kumo-subtle">{fill != null ? `of ${dust(d.cap)} DUST` : 'DUST'}</span>
+          {dust(d.balance)} <span className="font-medium text-kumo-subtle">{fill != null ? `of ${dust(d.cap)} DUST` : 'DUST'}{d.updating ? ' · updating' : ''}</span>
         </span>
         <CaretRightIcon size={14} className="text-kumo-subtle" />
       </span>
@@ -82,7 +82,11 @@ export function Home({ state, overview, onOpen }) {
       <div className="flex flex-col items-center gap-1.5">
         <span className="text-xs font-medium text-kumo-subtle">Total balance</span>
         {overview ? <BigAmount value={overview.night?.available ?? '0'} /> : <Loader />}
-        {overview && <span className="text-xs text-kumo-subtle tabular-nums">{dust(overview.dust.balance)} DUST available</span>}
+        {overview && (
+          <span className="text-xs text-kumo-subtle tabular-nums">
+            {dust(overview.dust.balance)} DUST available{overview.dust.updating ? ' · updating' : ''}
+          </span>
+        )}
         {/* NIGHT a transaction of this wallet has taken and not yet settled (its change comes back once it is final). */}
         {overview && BigInt(overview.night?.pending ?? 0) > 0n && (
           <span className="text-[11px] text-kumo-subtle tabular-nums">{night(overview.night.pending)} NIGHT pending</span>

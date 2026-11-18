@@ -5,7 +5,7 @@ import { Loader } from '@cloudflare/kumo/components/loader';
 import { DetailRow, ListCard, PageHeader, Screen, Section, SyncCard, Viewport } from './components.jsx';
 import { entryFor } from './endpoints.js';
 import { ui } from './api.js';
-import { percentText, withCommas } from './format.js';
+import { dateTime, percentText, withCommas } from './format.js';
 
 /** The header pill's status and label for the engine's sync state. */
 export function syncPill(sync) {
@@ -29,6 +29,28 @@ export function SyncSummary({ sync, onClick }) {
   }
   if (sync?.error) return <SyncCard title="Cannot reach the network yet" error={sync.error} onClick={onClick} />;
   return <SyncCard title="Connecting to the network…" onClick={onClick} />;
+}
+
+/**
+ * Where the shielded scan starts, in a sentence: the wallet birthday (a new
+ * wallet's is the block it was created at), or the start of the chain. When
+ * the running session could not start at the birthday, says so and why.
+ * With `onlyBirthday`, nothing for a wallet without one.
+ */
+export function ScanStart({ state, onlyBirthday = false }) {
+  const birthday = state.birthday;
+  const start = state.sync?.start?.shielded;
+  if (!birthday && onlyBirthday) return null;
+  const fellBack = birthday && start?.from === 'start' && start.reason;
+  return (
+    <p className="text-xs leading-normal text-kumo-subtle">
+      {birthday
+        ? `Scanning shielded tokens from ${dateTime(birthday.time)} (block ${withCommas(birthday.height)}). Shielded tokens received before then are not found.`
+        : 'Scanning shielded tokens from the start of the chain.'}
+      {fellBack ? ` ${start.reason}.` : ''}
+      {!birthday && state.birthdayNote ? ` ${state.birthdayNote}.` : ''}
+    </p>
+  );
 }
 
 const proverText = prover => (prover?.kind === 'server' ? prover.url : 'In this browser (WASM)');
@@ -62,6 +84,7 @@ export function SyncDetails({ state, onBack }) {
             </ListCard>
           )}
         </Section>
+        <ScanStart state={state} />
         <p className="text-xs leading-normal text-kumo-subtle">
           The wallet reads the chain through this node and indexer. Your keys never leave this device.
         </p>

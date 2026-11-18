@@ -3,12 +3,15 @@
 // its state, building, signing, proving and submitting transactions, DUST
 // registration, history and transaction descriptions all go through
 // @midnightntwrk/wallet-sdk; this module only adapts its objects to the
-// engine's JSON (decimal strings, hex, Bech32m).
+// engine's JSON (decimal strings, hex, Bech32m). The wallets are the SDK's,
+// composed from its public exports for a faster first sync: DUST on the
+// SDK's projections sync, and the shielded wallet started at the wallet
+// birthday (see "fast sync" below and birthday.js).
 //
 // It has no storage and no messaging, so the same code runs in the extension's
 // engine worker and under Node (scripts/smoke.mjs).
 import {
-  DustWallet, InMemoryTransactionHistoryStorage, MidnightBech32m, PublicKey, ShieldedAddress, ShieldedWallet, Token,
+  InMemoryTransactionHistoryStorage, MidnightBech32m, PublicKey, ShieldedAddress, ShieldedWallet, Token,
   UnshieldedAddress, UnshieldedWallet, DustAddress, WalletEntrySchema, WalletFacade, WalletSeeds, createKeystore,
   ShieldedCoinPublicKey, ShieldedEncryptionPublicKey, generateMnemonicWords, isInsufficientDustForFeeError,
   lifecycleTransactionTraits, mergeWalletEntries, validateMnemonic, ProtocolVersion,
@@ -18,11 +21,17 @@ import {
   fromV8ProvingProvider, fromV9ProvingProvider, makeVersionedProvingServiceEffect, wrapVersionedEffectService,
 } from '@midnightntwrk/wallet-sdk/capabilities/proving';
 import { WasmProver } from '@midnightntwrk/wallet-sdk/prover-client/effect';
-import { Effect } from 'effect';
+import { CustomForkingDustWallet, dustVariantConfigurations, dustWalletProbes } from '@midnightntwrk/wallet-sdk/dust';
+import { V1Builder as DustV1Builder } from '@midnightntwrk/wallet-sdk/dust/v1';
+import { V2Builder as DustV2Builder, SyncService as DustSyncService } from '@midnightntwrk/wallet-sdk/dust/v2';
+import { CoreWallet as ShieldedCoreV1 } from '@midnightntwrk/wallet-sdk/shielded/v1';
+import { CoreWallet as ShieldedCoreV2 } from '@midnightntwrk/wallet-sdk/shielded/v2';
+import { Effect, Option } from 'effect';
 import * as ledger from '@midnightntwrk/ledger-v9';
 import * as ledgerV8 from '@midnightntwrk/ledger-v8';
 import { mnemonicToSeed } from '@scure/bip39';
 import { connectionUrls, network as networkInfo } from '../../wallet/networks.mjs';
+import { gql, shieldedAnchor, zswapCollapsedUpdate } from './birthday.js';
 
 export const NIGHT = Token.night;
 const SNAPSHOT_VERSION = 1;
@@ -221,14 +230,127 @@ export function dappProver(prover, lookupDappKey, version = 'v9') {
   };
 }
 
+// ------------------------------------------------------------ fast sync ---
+// How often the DUST wallet looks at the chain again once it is synced. Each
+// look is a whole projections pass (one nullifier lookup per DUST coin held,
+// see FastDustWallet), so the SDK's default of 5 s costs bandwidth for no
+// gain: DUST changes only when the wallet pays a fee or its NIGHT moves.
+const DUST_PASS_INTERVAL_MS = 30000;
+
+/**
+ * One DUST pass now, outside the 30-second rhythm (the SDK's stepSync, which
+ * takes the keys of both ledger versions and uses the running variant's).
+ * After this wallet pays a fee, the DUST coin it spent stays booked and its
+ * change unknown until a pass sees the transaction on chain; with passes 30
+ * seconds apart, a second transaction made in between would find no DUST to
+ * pay with. The engine calls this every few seconds while coins are booked
+ * (see engine-worker.js). A pass already running makes this one a no-op (the
+ * SDK lets one pass run at a time), and the ledger-8 variant, which has no
+ * stepped sync, refuses it, which is ignored: it syncs by events anyway.
+ */
+export async function refreshDust(wallet) {
+  const keys = { v8: ledgerV8.DustSecretKey.fromSeed(wallet.seeds.dust), v9: ledger.DustSecretKey.fromSeed(wallet.seeds.dust) };
+  try { await wallet.facade.dust.stepSync(keys); } catch { /* the next pass catches up */ } finally { keys.v8.clear(); keys.v9.clear(); }
+}
+
+/** The protocol version of the chain's tip block, for the DUST wallet's start. */
+const tipVersionProbe = indexerHttp => async () => {
+  const data = await gql(indexerHttp, '{ block { protocolVersion } }');
+  if (!data.block) throw new Error('The indexer reports no block');
+  return ProtocolVersion.ProtocolVersion(BigInt(data.block.protocolVersion));
+};
+
+/**
+ * The SDK's forking DUST wallet with its ledger-9 variant on the SDK's
+ * "projections" sync (SyncService.makeEventLessSyncService) instead of the
+ * default replay of every DUST event since genesis, which on a public
+ * network is most of what a fresh wallet downloads. A projections pass asks
+ * the indexer for the DUST generations of this wallet's own DUST address,
+ * resolves which of them were spent through nullifier lookups that match on
+ * a prefix only (so the indexer cannot tell which nullifier is the wallet's),
+ * and takes the DUST commitment tree as one collapsed update, then checks
+ * both tree roots against the block it read. Passes repeat every
+ * DUST_PASS_INTERVAL_MS (the configuration's backgroundSyncInterval, which
+ * the SDK's projections service reads).
+ *
+ * The chain-version probe asks for the tip's version, not block 0's as the
+ * SDK's default does: projections keep no event cursor, so a fresh wallet
+ * has no history to replay and starts on the variant the chain is on now.
+ * That is only right because the ledger-9 variant syncs by projections; with
+ * event replay it would skip the chain's ledger-8 events. A snapshot made by
+ * the event replay of an earlier version of this wallet is resumed as is: the
+ * SDK accepts it (dust/v2 Sync.resumableBy refuses only the opposite pairing)
+ * and its first pass re-reads the address's generations from block 0.
+ *
+ * The ledger-8 variant keeps the SDK's event replay: it only runs on a chain
+ * still on ledger 8, or for a snapshot written there, and hands over to the
+ * ledger-9 variant at the fork as the SDK's own DustWallet does.
+ */
+function FastDustWallet(config) {
+  const configuration = {
+    ...config,
+    backgroundSyncInterval: DUST_PASS_INTERVAL_MS,
+    chainVersionProbe: tipVersionProbe(config.indexerClientConnection.indexerHttpUrl),
+  };
+  const { v1, v2, migration } = dustVariantConfigurations(configuration);
+  return CustomForkingDustWallet(
+    { ...configuration, ...dustWalletProbes(configuration) },
+    { builder: new DustV1Builder().withDefaults(), configuration: v1 },
+    {
+      // withSync drops the start material withDefaults set up, so it is set
+      // up again after it.
+      builder: new DustV2Builder().withDefaults()
+        .withSync(DustSyncService.makeEventLessSyncService, DustSyncService.makeEventLessSyncCapability)
+        .withStartAuxDefaults().withMigration(migration),
+      configuration: v2,
+    },
+  );
+}
+
+/**
+ * A shielded wallet (the SDK's ShieldedWallet class `Shielded`) that starts
+ * at a birthday anchor (birthday.js shieldedAnchor) instead of the chain's
+ * first event: an empty state of the variant the anchor's ledger version
+ * belongs to, fast-forwarded by the indexer's collapsed update of the zswap
+ * Merkle tree over [0, anchor.mtIndex], with its event cursor on the anchor
+ * event. Sync then replays only the events after it. This is the path the
+ * SDK's own restore takes (startAtVariant with a state), so the wallet is an
+ * ordinary one from there on: it snapshots, resumes and crosses forks as any
+ * other. Coins received before the anchor are not found.
+ */
+function startShieldedAtAnchor(Shielded, config, seeds, anchor, update) {
+  const version = ProtocolVersion.ProtocolVersion(anchor.protocolVersion);
+  const v9 = version >= config.forks.v9;
+  const [Core, Ledger] = v9 ? [ShieldedCoreV2, ledger] : [ShieldedCoreV1, ledgerV8];
+  const variant = Option.getOrThrowWith(Shielded.variantFor(version), () => new Error(`No shielded wallet variant for protocol version ${version}`));
+  // The state keeps the public keys only; the facade's start() hands the
+  // wallet its secret keys.
+  const keys = Ledger.ZswapSecretKeys.fromSeed(seeds.shielded);
+  let state;
+  try { state = Core.withProtocolVersion(Core.initEmpty(keys, config.networkId), version); } finally { keys.clear(); }
+  state = Core.applyCollapsedUpdate(state, Ledger.MerkleTreeCollapsedUpdate.deserialize(update.bytes));
+  if (state.state.firstFree !== anchor.mtIndex + 1n) {
+    throw new Error(`The collapsed update ends the tree at ${state.state.firstFree}, not ${anchor.mtIndex + 1n}`);
+  }
+  state = Core.updateProgress(state, { appliedIndex: BigInt(anchor.eventId) });
+  return Shielded.startAtVariant(Shielded, variant, state);
+}
+
 /**
  * Builds and starts the facade for one network from the 64-byte seed.
  * `snapshot` (what serialize() returned earlier) resumes the three wallets,
- * the history and the lifecycle records instead of syncing from the start;
- * a snapshot the SDK cannot read is ignored as a whole, so the parts never
- * disagree about where they are.
+ * the history and the lifecycle records instead of syncing from the start.
+ * A snapshot whose history the SDK cannot read is ignored as a whole; a
+ * wallet part the SDK will not restore (an unreadable blob, or a position its
+ * sync cannot continue from) starts afresh on its own.
+ *
+ * `birthday` (`{ height }`, or null for the start of the chain) is where a
+ * shielded wallet that starts afresh begins (see startShieldedAtAnchor). If
+ * the indexer cannot place it (no anchor query, no collapsed update, an
+ * inconsistent answer), the shielded wallet starts at the beginning of the
+ * chain instead, and `shieldedStart.reason` says why.
  */
-export async function openWallet({ network, endpoints, seed, snapshot = null }) {
+export async function openWallet({ network, endpoints, seed, snapshot = null, birthday = null }) {
   const networkId = networkInfo(network).networkId;
   const seeds = WalletSeeds.fromMasterSeed(seed);
   const keystore = createKeystore({ kind: 'schnorr', secret: seeds.unshielded }, networkId);
@@ -239,16 +361,39 @@ export async function openWallet({ network, endpoints, seed, snapshot = null }) 
     catch { resume = null; }
   }
   const configuration = sdkConfiguration(network, endpoints, history);
-  const restoreOr = (Wallet, part, fresh) => {
-    if (!resume) return fresh();
-    try { return Wallet.restore(resume[part]); } catch { return fresh(); }
+  // How each part started: 'snapshot', or afresh ('birthday' or 'start').
+  const started = { shielded: null, unshielded: null, dust: null };
+  let shieldedStart = { from: 'start', reason: null };
+  const restoreOr = async (Wallet, part, fresh) => {
+    if (resume) {
+      try { const w = Wallet.restore(resume[part]); started[part] = 'snapshot'; return w; } catch { /* starts afresh below */ }
+    }
+    started[part] = 'fresh';
+    return fresh();
+  };
+  const freshShielded = async (Shielded, config) => {
+    if (!birthday) return Shielded.startWithSeed(seeds.shielded);
+    const indexerHttp = config.indexerClientConnection.indexerHttpUrl;
+    try {
+      const anchor = await shieldedAnchor(indexerHttp, birthday.height, config.forks.v9);
+      if (!anchor) {
+        shieldedStart = { from: 'start', reason: 'The chain has no shielded outputs before the wallet birthday, so there is nothing to skip' };
+        return Shielded.startWithSeed(seeds.shielded);
+      }
+      const wallet = startShieldedAtAnchor(Shielded, config, seeds, anchor, await zswapCollapsedUpdate(indexerHttp, anchor.mtIndex));
+      shieldedStart = { from: 'birthday', reason: null, anchor: { height: anchor.height, eventId: anchor.eventId, mtIndex: anchor.mtIndex.toString() } };
+      return wallet;
+    } catch (error) {
+      shieldedStart = { from: 'start', reason: `The indexer could not start the shielded sync at the wallet birthday (${String(error?.message ?? error).slice(0, 300)}), so it syncs from the start of the chain` };
+      return Shielded.startWithSeed(seeds.shielded);
+    }
   };
   const facade = await WalletFacade.init({
     configuration,
-    shielded: config => restoreOr(ShieldedWallet(config), 'shielded', () => ShieldedWallet(config).startWithSeed(seeds.shielded)),
+    shielded: config => restoreOr(ShieldedWallet(config), 'shielded', () => freshShielded(ShieldedWallet(config), config)),
     unshielded: config => restoreOr(UnshieldedWallet(config), 'unshielded',
       () => UnshieldedWallet(config).startWithPublicKey(PublicKey.fromKeyStore(keystore))),
-    dust: config => restoreOr(DustWallet(config), 'dust', () => DustWallet(config).startWithSeed(seeds.dust)),
+    dust: config => restoreOr(FastDustWallet(config), 'dust', () => FastDustWallet(config).startWithSeed(seeds.dust)),
     ...(configuration.provers ? { provingService: config => wasmProvingService(config.forks) } : {}),
     ...(resume?.lifecycle ? {
       transactionLifecycleService: (config, { clock }) =>
@@ -256,8 +401,9 @@ export async function openWallet({ network, endpoints, seed, snapshot = null }) 
     } : {}),
   });
   await facade.start(seeds);
+  if (started.shielded === 'snapshot') shieldedStart = { from: 'snapshot', reason: null };
   return {
-    network, networkId, facade, keystore, seeds, history,
+    network, networkId, facade, keystore, seeds, history, started, shieldedStart,
     // Where the chain hands over between ledger versions, as the facade
     // resolved it (the SDK's default schedule: none is configured here).
     forks: WalletFacade.resolveConfiguration(configuration).forks,
@@ -302,6 +448,12 @@ export function syncOf(s) {
   return { status: synced ? 'synced' : connected || percent > 0 ? 'syncing' : 'connecting', percent, parts };
 }
 
+/** Whether a facade state is synced but for a DUST pass that is running:
+ *  shielded and unshielded level with the chain, DUST connected. */
+export function onlyDustBehind(s) {
+  return !!s && s.shielded.progress.isStrictlyComplete() && s.unshielded.progress.isStrictlyComplete() && s.dust.progress.isConnected;
+}
+
 /** Bech32m addresses and shielded public keys from a facade state. */
 export function addressesOf(s, networkId) {
   return {
@@ -318,19 +470,41 @@ const tokenList = balances => Object.entries(balances ?? {})
   .map(([type, amount]) => ({ type, amount: BigInt(amount).toString() }))
   .sort((a, b) => (a.type === NIGHT ? -1 : b.type === NIGHT ? 1 : a.type.localeCompare(b.type)));
 
-/** The overview the popup's home screen shows. */
-export function overviewOf(s, networkId, now = new Date()) {
+/**
+ * The DUST balance to show: `{ balance, updating }`. A transaction that pays
+ * a fee books the DUST coin it spends, and the coin it gets back as change is
+ * only learned from the chain by the DUST wallet's next pass (see
+ * refreshDust). In between the SDK's balance leaves the booked
+ * coin out, and with a single DUST coin reads 0 although the wallet has DUST.
+ * So while coins are booked, the figure shown is the larger of the SDK's and
+ * the last one seen with nothing booked, flagged `updating`. `memo` (an
+ * object kept for the running wallet) holds that last figure.
+ */
+export function dustBalanceOf(s, memo = {}, now = new Date()) {
+  const balance = s.dust.balance(now);
+  if (!s.dust.pendingCoins.length) {
+    memo.settledDust = balance;
+    return { balance, updating: false };
+  }
+  const settled = memo.settledDust ?? 0n;
+  return { balance: settled > balance ? settled : balance, updating: true };
+}
+
+/** The overview the popup's home screen shows. `memo`: see dustBalanceOf. */
+export function overviewOf(s, networkId, now = new Date(), memo = {}) {
   const available = s.unshielded.balances?.[NIGHT] ?? 0n;
   const pending = sum(s.unshielded.pendingCoins.filter(c => c.utxo.type === NIGHT).map(c => c.utxo.value));
   const coins = s.unshielded.availableCoins.filter(c => c.utxo.type === NIGHT);
   const registered = coins.filter(c => c.meta.registeredForDustGeneration);
   const unregistered = coins.filter(c => !c.meta.registeredForDustGeneration);
+  const shown = dustBalanceOf(s, memo, now);
   return {
     night: { available: available.toString(), pending: pending.toString() },
     unshielded: tokenList(s.unshielded.balances),
     shielded: tokenList(s.shielded.balances),
     dust: {
-      balance: s.dust.balance(now).toString(),
+      balance: shown.balance.toString(),
+      updating: shown.updating,
       // The cap of the NIGHT the wallet still holds, as the connector reports
       // it: DUST whose backing NIGHT was spent (a send, a registration that
       // moved it) has a decay time and only shrinks.

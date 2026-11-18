@@ -135,7 +135,7 @@ try {
     const tooShort = await ui('createWallet', { mnemonic: words.join(' '), password: 'short' });
     log('createWallet with a 5-character password ->', JSON.stringify(tooShort.error));
     const password = 'correct horse battery';
-    const created = await must('createWallet', { mnemonic: words.join(' '), password });
+    const created = await must('createWallet', { mnemonic: words.join(' '), password, restore: false });
     log('createWallet', JSON.stringify(short(created)), JSON.stringify(created.addresses));
     const synced = await untilSynced('first sync', 10 * 60 * 1000);
     log('synced', JSON.stringify(short(synced)));
@@ -167,7 +167,7 @@ try {
 
     log('Blockfrost network without a project id: a second wallet on Preprod');
     await must('selectNetwork', { network: 'preprod' });
-    await must('createWallet', { mnemonic: (await must('generateMnemonic')).words.join(' '), password });
+    await must('createWallet', { mnemonic: (await must('generateMnemonic')).words.join(' '), password, restore: false });
     await wait(1000);
     log('preprod state', JSON.stringify(short(await must('state'))));
     log('resetWallet with a wrong password ->', JSON.stringify((await ui('resetWallet', { password: 'wrong password' })).error));
@@ -185,7 +185,7 @@ try {
     await must('saveSettings', { network: 'undeployed', endpoints: { ...settings.endpoints.undeployed, ...devnet, ...prover } });
     await must('selectNetwork', { network: 'undeployed' });
     const { words } = await must('generateMnemonic');
-    const created = await must('createWallet', { mnemonic: words.join(' '), password: 'devnet wallet password' });
+    const created = await must('createWallet', { mnemonic: words.join(' '), password: 'devnet wallet password', restore: false });
     await untilSynced('devnet wallet', 10 * 60 * 1000);
     log('devnet wallet', JSON.stringify(created.addresses));
 

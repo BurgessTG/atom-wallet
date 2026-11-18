@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 // Drives the engine's Midnight logic (extension/src/midnight.js) under Node
 // against a real network: a fresh recovery phrase, sync to the tip, addresses
-// and balances, then a snapshot and a resume from it.
+// and balances, then a snapshot and a resume from it. A fresh phrase is a new
+// wallet, so it is born at the chain's tip as the extension's are (see
+// extension/src/birthday.js); with --seed it scans from the start.
 //
 //   node scripts/smoke.mjs [--network preview]
 //   [--node ws://host:port] [--indexer http://host:port] [--proof-server http://host:port]
@@ -17,6 +19,7 @@ import {
   addressesOf, buildDustAction, buildTransfer, checkAddress, completeRecipe, deriveAddresses, generateMnemonic,
   historyItems, NIGHT, openWallet, overviewOf, seedFromMnemonic, syncOf,
 } from '../extension/src/midnight.js';
+import { birthdayBlock } from '../extension/src/birthday.js';
 import { endpointsOf } from '../wallet/networks.mjs';
 
 const args = Object.fromEntries(process.argv.slice(2).reduce((acc, arg, i, all) => {
@@ -59,7 +62,10 @@ if (args.seed) {
 }
 const derived = deriveAddresses(seed, network);
 
-const first = await openWallet({ network, endpoints, seed });
+const birthday = args.seed ? null : await birthdayBlock(endpoints.indexerHttp);
+log('wallet birthday', json(birthday));
+const first = await openWallet({ network, endpoints, seed, birthday });
+log('shielded sync starts from', json(first.shieldedStart));
 const s1 = await synced(first, 'first sync');
 log('synced');
 const overview = overviewOf(s1, first.networkId);
@@ -81,10 +87,11 @@ log('snapshot sizes', json(Object.fromEntries(Object.entries(snapshot).map(([k, 
 await first.stop();
 log('stopped; resuming from the snapshot');
 
-const resumed = await openWallet({ network, endpoints, seed, snapshot });
+const resumed = await openWallet({ network, endpoints, seed, snapshot, birthday });
 const resumeStarted = Date.now();
 const s2 = await synced(resumed, 'resume');
-log(`resumed and synced in ${((Date.now() - resumeStarted) / 1000).toFixed(1)}s`);
+log(`resumed and synced in ${((Date.now() - resumeStarted) / 1000).toFixed(1)}s`, json(resumed.started));
+if (Object.values(resumed.started).some(how => how !== 'snapshot')) throw new Error('a wallet part did not resume from the snapshot');
 const again = overviewOf(s2, resumed.networkId);
 if (json(again.addresses) !== json(overview.addresses)) throw new Error('addresses changed across the resume');
 log('balances after resume', json({ night: again.night, unshielded: again.unshielded, shielded: again.shielded, dust: again.dust }));

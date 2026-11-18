@@ -39,15 +39,19 @@ API 4.1.0 on `window.midnight`.
 
 - Preview, Preprod, Mainnet and Undeployed, each a separate wallet with its
   own recovery phrase, password, database and site approvals.
-- Create a wallet (24 words) or restore one from a recovery phrase.
+- Create a wallet (24 words) or restore one from a recovery phrase, with an
+  optional wallet birthday date.
 - Three addresses and balances: unshielded, shielded and DUST. NIGHT has 6
   decimals and DUST 15.
 - Receive with a QR code for each address; Send NIGHT and other tokens to
   several recipients at once, shielded or unshielded depending on the
   recipient's address, with MAX and a review step. Fees are paid in DUST.
 - DUST page: register NIGHT for DUST generation and stop generating again.
-- Live sync progress for the three wallets, and a snapshot of the SDK's state
-  so a browser restart resumes instead of syncing from the start.
+- Fast sync: the DUST wallet reads its own DUST through the SDK's projections
+  sync instead of replaying every DUST event of the chain, and the shielded
+  wallet starts at the wallet birthday (a new wallet's is the block it was
+  created at). Live progress for the three wallets, and a snapshot of the
+  SDK's state so a browser restart resumes instead of syncing again.
 - Proving per network: the SDK's in-browser WASM prover (no extra software)
   or a proof server you run.
 - Activity with every token change of every transaction, and a detail page
@@ -66,11 +70,25 @@ API 4.1.0 on `window.midnight`.
 - Unlock once per browser session; while unlocked, sends and approvals need a
   click, not the password.
 
+## Sync
+
+A fresh wallet on Preview used to download about 28 MB and take about 96
+seconds to sync, nearly all of it DUST events of other wallets. The DUST wallet
+now asks only for its own address's DUST, and a new wallet's shielded sync
+starts at the block it was created at, using the zswap Merkle tree the indexer
+collapses up to there. Measured on Preview (November 2026): a new wallet synced
+in 7 seconds with 1.4 MB, a restore without a date in 15 seconds with 3.4 MB.
+Shielded tokens received before a wallet's birthday are not found; a restore
+without a date scans the whole chain, and Settings can rescan a wallet from the
+start of the chain. See [How sync works](docs/technical.md#how-sync-works).
+
 ## Proving time and memory
 
-The in-browser prover is slow and uses a lot of memory. A send with a shielded
-spend took about 3.5 minutes and peaked at about 3.5 GB. Proofs run one at a
-time, because running them in parallel exhausted memory. A proof server is
+The in-browser prover is slower than a proof server and uses a lot of memory.
+On the development machine a transfer's proofs took about 46 seconds, against
+16 to 20 seconds for a whole send with a local proof server; an earlier
+measurement of a send with a shielded spend peaked at about 3.5 GB. Proofs run
+one at a time, because running them in parallel exhausted memory. A proof server is
 the alternative: set it per network in Settings (default
 `http://localhost:6300`, the `midnightntwrk/proof-server:9.0.2` image). See
 [Proving](docs/technical.md#proving).

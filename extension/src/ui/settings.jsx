@@ -9,7 +9,7 @@ import { AddRow, ListCard, PasswordField, PrimaryButton, SecondaryButton, Sectio
 import { DEFAULT_PROOF_SERVER, NETWORKS } from '../../../wallet/networks.mjs';
 import { entryFor, withEntry } from './endpoints.js';
 import { ui } from './api.js';
-import { networkName } from './format.js';
+import { dateTime, networkName, withCommas } from './format.js';
 
 const PROVERS = [
   { kind: 'wasm', title: 'In this browser (WASM)', hint: 'No extra software, slower' },
@@ -91,6 +91,13 @@ export function Settings({ state }) {
     save(next, 'Defaults restored');
   };
   const lock = () => ui('lock').catch(e => toasts.add({ title: 'Could not lock', description: e.message, variant: 'error' }));
+  const rescan = async fromStart => {
+    try {
+      await ui('rescan', { fromStart });
+      toasts.add({ title: 'Rescanning', description: 'Balances fill in again as the chain is read.', variant: 'success' });
+    } catch (e) { toasts.add({ title: 'Could not rescan', description: e.message, variant: 'error' }); }
+  };
+  const birthday = state.birthday;
 
   return (
     <Viewport gap="gap-5">
@@ -132,15 +139,23 @@ export function Settings({ state }) {
         <div className="flex flex-col gap-2.5 rounded-xl border border-kumo-hairline bg-kumo-base p-3.5">
           <span className="text-sm font-semibold text-kumo-default">Rescan</span>
           <p className="text-xs leading-normal text-kumo-subtle">
-            Syncs {name} again from the start. Use it if balances or activity look wrong. It can take a while.
+            {birthday
+              ? `Syncs ${name} again, shielded tokens from the wallet birthday (${dateTime(birthday.time)}, block ${withCommas(birthday.height)}). `
+              : `Syncs ${name} again from the start of the chain. `}
+            Use it if balances or activity look wrong. It can take a while.
           </p>
-          <SecondaryButton className="w-full" onClick={async () => {
-            try {
-              await ui('rescan');
-              toasts.add({ title: 'Rescanning', description: 'Balances fill in again as the chain is read.', variant: 'success' });
-            } catch (e) { toasts.add({ title: 'Could not rescan', description: e.message, variant: 'error' }); }
-          }}>Rescan</SecondaryButton>
+          <SecondaryButton className="w-full" onClick={() => rescan(false)}>Rescan</SecondaryButton>
         </div>
+        {birthday && (
+          <div className="flex flex-col gap-2.5 rounded-xl border border-kumo-hairline bg-kumo-base p-3.5">
+            <span className="text-sm font-semibold text-kumo-default">Rescan from the start of the chain</span>
+            <p className="text-xs leading-normal text-kumo-subtle">
+              Removes the wallet birthday and scans every shielded transaction since the chain began, to find tokens received
+              before the birthday. It downloads the chain's whole shielded history, which takes much longer than a rescan from the birthday.
+            </p>
+            <SecondaryButton className="w-full" onClick={() => rescan(true)}>Rescan from the start of the chain</SecondaryButton>
+          </div>
+        )}
       </Section>
       <Section title="Danger zone">
         <div className="flex flex-col gap-2.5 rounded-xl border border-kumo-hairline bg-kumo-base p-3.5">

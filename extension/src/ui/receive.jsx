@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { CheckIcon, CopyIcon } from '@phosphor-icons/react';
 import { AddressQR, ActionFooter, NetworkPill, PageHeader, PrimaryButton, Screen, Segmented, Viewport, useCopy } from './components.jsx';
 import { networkName } from './format.js';
+import { ScanStart } from './sync.jsx';
 
 const KINDS = [
   { value: 'unshielded', label: 'Unshielded', about: 'Receives NIGHT and other public tokens. Balances and transfers at this address are visible on the chain.' },
@@ -27,6 +28,7 @@ export function Receive({ state, onBack }) {
           <p className="w-full text-center font-mono text-xs leading-normal break-all text-kumo-default">{address}</p>
         </div>
         <p className="text-center text-xs leading-normal text-kumo-subtle">{current.about}</p>
+        {kind === 'shielded' && <ScanStart state={state} onlyBirthday />}
       </Viewport>
       <ActionFooter primary={(
         <PrimaryButton icon={copied ? CheckIcon : CopyIcon} disabled={!address} onClick={() => copy(address)}>

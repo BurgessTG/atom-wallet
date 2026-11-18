@@ -26,7 +26,7 @@ flowchart LR
   inject --> content["content script<br/>(isolated world)"]
   content -- "one Port per page" --> bg["background service worker<br/>connector routing · permissions · approval windows"]
   popup["popup / approval windows<br/>(React)"] --> bg
-  bg --> off["offscreen document"]
+  bg -- "one Port" --> off["offscreen document"]
   subgraph engine["engine worker"]
     sdk["Midnight wallet SDK facade<br/>shielded · unshielded · DUST wallets<br/>ledger v9 (WASM)"]
     vault["vault<br/>sealed seed · record key"]
@@ -53,8 +53,12 @@ pieces:
   (dApps, through the background). All Midnight logic runs here, from the
   SDK's packages. `midnight.js` has no storage and no messaging, so the same
   code also runs under Node in `scripts/smoke.mjs`.
-- **Offscreen document** (`offscreen.js`). It relays runtime messages to the
-  worker and pushes the engine's state to every extension page.
+- **Offscreen document** (`offscreen.js`). It relays the background's requests
+  to the worker and broadcasts the engine's state to every extension page.
+  Every request and answer between the background and the offscreen document
+  travels one runtime Port, which the background opens, so a request (some are
+  a dApp's key material, many megabytes) never reaches the other extension
+  pages as a runtime message would.
 - **Background service worker** (`background.js`). It routes requests to the
   engine, owns the per-site permissions in `chrome.storage.local`, runs the
   connector's permission checks and opens the approval windows. It never holds
@@ -135,24 +139,133 @@ sequenceDiagram
 ```
 
 - **Three wallets.** The SDK facade runs a shielded, an unshielded and a DUST
-  wallet from one seed. Each reports its own progress, and the wallet counts as
-  synced when the facade says so. The popup shows the three percentages
-  separately and the mean in the header. The indexer's latest block height is
-  polled every 30 seconds for the "chain tip" line.
+  wallet from one seed. Each reads the chain its own way (below), reports its
+  own progress, and the wallet counts as synced when the facade says so. The
+  popup shows the three percentages separately and the mean in the header;
+  while catching up, a figure never goes back. The indexer's latest block
+  height is polled every 30 seconds for the "chain tip" line.
 - **Resume.** The engine saves a snapshot every 60 seconds, as soon as the
   first sync completes, and when a session stops: the three wallets'
   serialized states, the transaction history and the transaction lifecycle
   records. It is encrypted (see [Keys and unlocking](#keys-and-unlocking)).
   After a browser restart the wallets restore from it and read only what is
-  new. A snapshot the SDK cannot read is ignored as a whole, so the parts
-  never disagree about where they are.
-- **Restore.** A restored wallet syncs from the start of the chain. There is no
-  birthday or checkpoint, so a restore on a long chain takes as long as the
-  indexer takes to serve it.
-- **Rescan.** Settings has a Rescan that deletes the snapshot and syncs again.
-  The wallet's notes about transactions it made itself are kept.
+  new. A snapshot whose history the SDK cannot read is ignored as a whole; a
+  wallet part the SDK will not restore starts afresh on its own.
+- **Rescan.** Settings, History has two. **Rescan** deletes the snapshot and
+  syncs again, the shielded wallet from the wallet birthday. **Rescan from the
+  start of the chain** (shown when the wallet has a birthday) also removes the
+  birthday, for a wallet that received shielded tokens before it; it downloads
+  the chain's whole shielded history. The wallet's notes about transactions it
+  made itself are kept by both.
 - **Failures.** If the connection fails, the engine retries after 2 seconds,
-  doubling up to 60 seconds. The status shows the error in the meantime.
+  doubling up to 60 seconds. The status shows the error in the meantime. An
+  indexer that says (through GraphQL introspection) that it lacks a query the
+  sync needs is named in the status, and the wallet does not retry.
+
+### What each wallet downloads
+
+```mermaid
+flowchart TD
+  start["wallet starts"] --> snap{"snapshot of<br/>this part?"}
+  snap -- "yes, and the SDK restores it" --> resume["resume where it stopped"]
+  snap -- "no" --> part{"which part"}
+  part -- "unshielded" --> un["transactions of its own address<br/>(the indexer filters by address)"]
+  part -- "DUST" --> dust["projections pass:<br/>generations of its own DUST address,<br/>prefix-matched nullifier lookups,<br/>one collapsed commitment tree,<br/>roots checked against the block"]
+  part -- "shielded" --> bday{"wallet<br/>birthday?"}
+  bday -- "none" --> full["replay every zswap event<br/>since the start of the chain"]
+  bday -- "block height" --> anchor["anchor: last zswap output<br/>at or before that block"]
+  anchor --> collapsed["zswap tree collapsed over [0, anchor]<br/>from the indexer, then replay<br/>only the events after it"]
+  anchor -. "indexer cannot place it" .-> full
+  dust --> again["a new pass every 30 s"]
+```
+
+- **Unshielded.** The indexer serves the transactions of the wallet's own
+  address. Unchanged.
+- **DUST: projections, not replay.** The SDK's default DUST wallet replays every
+  DUST event of the chain, which was over 90% of a fresh wallet's download on
+  Preview. mdwa builds the SDK's own forking DUST wallet with the projections
+  sync the SDK ships (`SyncService.makeEventLessSyncService`): each pass asks
+  for the DUST generations of the wallet's own DUST address, resolves which of
+  its DUST was spent with nullifier lookups that match on a prefix only (so
+  the indexer sees a group of nullifiers, not the wallet's), takes the DUST
+  commitment tree as one collapsed update, and checks both tree roots against
+  the block it read. A pass runs again every 30 seconds (the SDK's default is
+  5, set through the configuration's `backgroundSyncInterval`), and every 3
+  seconds while a fee this wallet paid waits for its block (see
+  [Sending and DUST](#sending-and-dust)).
+  A new wallet starts on the ledger version the chain's tip is on, since a
+  projections wallet has no history to replay. This is the only DUST sync, on
+  every network.
+- **Shielded: from the wallet birthday.** The shielded wallet finds its coins by
+  trying every zswap output of the chain with its keys, so it has to read the
+  outputs since its first coin, but not before. A wallet record carries a
+  **birthday**: a block height, or none for "from the start of the chain". At
+  a fresh start the engine finds the anchor, the last zswap output at or before
+  that block (its event id and Merkle index; event ids are the indexer's
+  database ids, so the anchor is worked out again from the height against the
+  indexer in use and never stored), fetches the zswap Merkle tree collapsed
+  over everything up to it (`zswapMerkleTreeCollapsedUpdate`), builds the SDK's
+  empty shielded state, applies that update, checks that the tree ends where
+  the anchor says, and starts the SDK's shielded wallet there with its event
+  cursor on the anchor, the same way the SDK restores a snapshot. From there it
+  is an ordinary shielded wallet. **Shielded tokens received before the
+  birthday are not found.**
+- **Which birthday.** A new wallet is born at the chain's tip when it is created:
+  its phrase was made just then, so nothing can have been sent to it before. A
+  restored wallet has an optional **Wallet birthday** date. Left empty, it scans
+  shielded tokens from the start of the chain. With a date, it scans from the
+  last block at or before 00:00 UTC of that day, so it never starts later than
+  any time zone's reading of the day; a date before the chain's first block
+  means the start, a date after the tip means the tip, and a date in the future
+  is refused. Wallets made before birthdays existed have none and keep the full
+  history their snapshots already hold.
+- **Fallbacks.** A chain with no zswap output by the birthday has nothing to
+  skip, so the wallet starts at the beginning. If the indexer cannot place the
+  birthday (no `zswapMerkleTreeCollapsedUpdate`, an inconsistent answer, an
+  error), the shielded wallet syncs from the start of the chain and Chain sync
+  says why; creating the wallet never fails for it. If the chain tip cannot be
+  read when a new wallet is created, it is born at the start (correct, only
+  slower) and says so. A restore with a date the indexer cannot place is
+  refused, since the date was asked for.
+- **Receive and Chain sync** say "Scanning shielded tokens from" the birthday
+  block's date and height for a wallet with a birthday.
+
+Measured on Preview on 18 November 2026 (block 166,650), one fresh wallet each,
+counting every WebSocket frame and HTTP body the engine's Midnight code
+exchanged until the facade reported synced (the same `midnight.js` under Node,
+metered on the wire):
+
+| Wallet | Before (event replay, no birthday) | New wallet (birthday at the tip) | Restore without a date |
+| --- | --- | --- | --- |
+| Wire bytes | 28.2 MB | 1.36 MB | 3.39 MB |
+| Messages | 65,908 | 67 | 5,319 |
+| Time to synced | 95.6 s | 7.1 s | 14.9 s |
+| DUST events replayed | 60,558 messages, 24.8 MB | none (projections: about 3 KB) | none (projections: about 3 KB) |
+| Zswap events | 5,269 messages, 2.0 MB | 3 messages | 5,271 messages, 2.0 MB |
+
+In the extension itself, from the click on Create wallet or Restore wallet to
+synced, on the same day: 8.5 seconds for a new wallet and 17.7 seconds for a
+restore without a date (one run each). After a browser restart a synced wallet
+resumes from its snapshot in about a second, unlock included.
+
+About 1.33 MB of every figure is the node connection's start-up (the runtime
+metadata the SDK's node client reads), which no sync mode changes. A wallet
+that has spent DUST many times costs more on its first projections pass: each
+of its past DUST spends is resolved by a nullifier lookup of its own, in
+sequence, from block 0 (a test wallet with 344 spends took 345 lookups, 10 MB
+and 27 s), and each later pass looks up every DUST coin the wallet holds.
+
+### Wallets from before fast sync
+
+A wallet made by an earlier version of mdwa has a DUST snapshot written by the
+event replay. The SDK resumes it with the projections sync (it refuses only the
+opposite, a projections snapshot handed to an event replay, through
+`SyncService.resumableBy`), so on the first start after the update all three
+parts resume from the snapshot: nothing starts afresh, and the first DUST pass
+re-reads the address's generations from block 0 and checks the coins the
+wallet already holds. If the SDK ever refuses a part of a snapshot, that part
+alone starts afresh. Such a wallet has no birthday, and a rescan scans it from
+the start of the chain as before.
 - **Locked means not syncing.** The SDK needs the shielded and DUST secret
   keys to read the chain, so a locked network does not sync at all.
 - **Spent coins.** A transaction the wallet builds books the coins it spends.
@@ -204,9 +317,13 @@ Proving is switchable per network in Settings:
   workers of the engine. Nothing to install. Key material for Midnight's own
   circuits and the public parameters are fetched from
   `https://srs.midnight.network`, which the manifest lists as a host permission.
-  It is slow and memory-hungry: a send with a shielded spend measured about
-  3.5 minutes and about 3.5 GB at peak.
-- **Proof server.** A URL, `http://localhost:6300` by default (the
+  It is slower than a proof server and memory-hungry: on the development
+  machine a transfer's proofs took about 46 seconds, and an earlier
+  measurement of a send with a shielded spend peaked at about 3.5 GB.
+- **Proof server.** On the same machine, with the proof server on localhost,
+  sends took 16 to 20 seconds from Send to submitted, and a contract deploy
+  through the connector about 17 seconds.
+- **Proof server setting.** A URL, `http://localhost:6300` by default (the
   `midnightntwrk/proof-server:9.0.2` image). The wallet sends proving requests
   to it.
 
@@ -244,9 +361,19 @@ flowchart LR
   left of that token after the other recipients. A transaction expires 30
   minutes after it is balanced; the review shows the time.
 - **Fees.** The network fee is paid in DUST, not in the token you send. If the
-  wallet has too little DUST, the send fails with a shortfall.
-- **One at a time.** The engine refuses a second transaction while one is being
-  balanced, proved or submitted.
+  wallet has too little DUST, the send fails with a shortfall. A fee books the
+  DUST coin it spends, and the DUST wallet learns the change coin only when a
+  pass sees the transaction on chain. So while DUST is booked the engine asks
+  for a pass every 3 seconds (for up to two minutes after the last new booking;
+  a swap offer holds its coins longer and is left to the 30-second passes), and
+  the change is spendable within seconds of the block. Until then the SDK's
+  balance leaves the booked coin out (with one DUST coin it reads 0): Home and
+  the DUST page show the last figure from before the fee, marked "updating",
+  and `getDustBalance` answers the same figure.
+- **One at a time.** One transaction is balanced, proved or submitted at a
+  time. The popup's request is refused while another runs; a site's request
+  waits its turn for up to 15 minutes (see
+  [dApp connector](dapp-connector.md#limits)).
 - **DUST.** NIGHT that you register for DUST generation produces DUST over
   time, up to a cap. The DUST page shows the balance, the cap, and registered
   against unregistered NIGHT. Register registers all unregistered NIGHT outputs;
@@ -257,7 +384,10 @@ flowchart LR
 - **Activity.** History comes from the SDK. Each transaction shows its signed
   change per token, shielded tokens tagged, and DUST as the fee it paid. A
   transaction made by the wallet is labelled with what it was, and a dApp's with
-  its site. Status is pending, confirmed, finalized or failed.
+  its site. Status is pending, confirmed, finalized or failed. A swap offer a
+  site asked for shows as "Swap offer for" the site's host, Offered until it is
+  taken and Expired once its coins are released; until then it holds the whole
+  coins it spends.
 
 ## Custom tokens
 
@@ -301,8 +431,9 @@ The popup is 380 by 600 pixels, with light and dark themes and a network color
 for each network. It has:
 
 - a network switcher showing which networks have a wallet;
-- create and restore per network: 24 words for a new wallet, 12 to 24 for a
-  restore, and a password;
+- create and restore per network: 24 words for a new wallet, which starts at
+  the current block, 12 to 24 for a restore with an optional wallet birthday
+  date, and a password;
 - **Home**: the NIGHT balance, DUST available, Receive, Send and DUST actions,
   a strip while the engine balances, proves or submits, a DUST card (balance
   against cap, registered and unregistered NIGHT), and the unshielded and
@@ -313,7 +444,8 @@ for each network. It has:
 - **Send** and its **Review**, **DUST**, **Activity** (grouped by month, eight
   per page, with a detail page and the serialized transaction), **Token**,
   **Sites** (each approved site, its network, the permissions granted to it, and
-  Disconnect) and **Settings** (connection, proving, lock, rescan, remove wallet).
+  Disconnect) and **Settings** (connection, proving, lock, rescan from the
+  birthday or from the start of the chain, remove wallet).
 
 Approval windows (440 by 680 pixels) are separate browser windows opened by the
 background; see [dApp connector](dapp-connector.md#approval-windows).
@@ -382,9 +514,9 @@ its arguments.
 
 | Command | Does |
 | --- | --- |
-| `npm run smoke` | the engine's Midnight logic under Node against a real network: a fresh phrase, sync, addresses, balances, snapshot and resume; with a funded seed, sends and DUST registration |
+| `npm run smoke` | the engine's Midnight logic under Node against a real network: a fresh phrase born at the tip, sync, addresses, balances, snapshot and resume of all three parts; with a funded seed (scanned from the start), sends and DUST registration |
 | `npm run check:browser` | the built extension in a browser: the engine boots under the extension's policy, a wallet on Preview syncs, lock and unlock work, the WASM prover proves in a worker |
-| `npm run check:connector` | the built extension and the test dApp in a browser, through every connector method, answering the approval windows |
+| `npm run check:connector` | the built extension and the test dApp in a browser, through every connector method, answering the approval windows (`--prover server` proves with the proof server, `--profile-root` picks where its throwaway profile goes) |
 
 ### The local test dApp
 
@@ -417,9 +549,29 @@ More in [dApp connector](dapp-connector.md#the-local-test-dapp).
   A proof server is faster but is software you run, and it sees the transactions
   you prove with it.
 - **Token names are labels.** Yours, or a contract's, never a registry's.
+- **The indexer supplies the starting trees.** A wallet that starts at its
+  birthday takes the zswap Merkle tree up to the anchor from the indexer's
+  collapsed update, and the DUST wallet takes its commitment and generation
+  trees the same way. The wallet checks that the zswap tree ends at the
+  anchor's index and that the DUST trees' roots match the block the indexer
+  reports, but neither is cross-checked against the node. A wrong tree from the
+  indexer cannot spend your funds; it would make the wallet miss coins or
+  build transactions the chain rejects.
+- **Shielded tokens before the birthday are not found.** A restore with a date
+  skips everything before it; Rescan from the start of the chain finds it.
+- **DUST sync and ledger forks.** The SDK's projections sync does not handle a
+  protocol-version boundary (it reads no versions); every network is on ledger
+  9 as of November 2026, so there is none to cross. A wallet with many past
+  DUST spends pays for them on its first pass (see
+  [What each wallet downloads](#what-each-wallet-downloads)).
 - **Mainnet and Preprod sync were not exercised.** Development had no Blockfrost
-  project id. Preview and a local network (Undeployed) were. The Blockfrost
-  endpoints in the table are defaults and may need editing.
+  project id. Preview and a local network (Undeployed) were. Blockfrost's
+  documentation lists the DUST queries the sync uses as Beta, and whether it
+  offers `zswapMerkleTreeCollapsedUpdate` is unknown. If it says it lacks one of
+  the sync's queries, Chain sync names it instead of syncing without end; a
+  missing collapsed update makes the shielded wallet scan from the start of the
+  chain. The Blockfrost endpoints in the table are defaults and may need
+  editing.
 - **One account per wallet.** One seed gives one set of three addresses; there is
   no account switcher and no address rotation.
 - **Not implemented:** hardware wallets; sending DUST; signing data with
@@ -439,7 +591,8 @@ More in [dApp connector](dapp-connector.md#the-local-test-dapp).
 | `extension/src/background.js` | service worker: connector routing, permissions, approval windows, offscreen lifecycle |
 | `extension/src/offscreen.js` | hosts and relays to the engine worker |
 | `extension/src/engine-worker.js` | the engine: state, sessions, snapshots, the `ui` and `connector` tables |
-| `extension/src/midnight.js` | everything that talks to the wallet SDK: facade, sync state, send, DUST, history, transaction descriptions, provers |
+| `extension/src/midnight.js` | everything that talks to the wallet SDK: facade (with the projections DUST sync and the birthday start), sync state, send, DUST, history, transaction descriptions, provers |
+| `extension/src/birthday.js` | the wallet birthday: dates to blocks, the shielded anchor and collapsed update, the indexer's query check |
 | `extension/src/connector.js` | the connector's engine side: balancing, previews, signing, proving transport |
 | `extension/src/tokens.js` | token labels and the watch-token check |
 | `extension/src/vault.js` | seed sealing and the record key |

@@ -136,6 +136,8 @@ export function DustPage({ state, overview, onBack }) {
               <span className="flex items-center gap-2">
                 <DropIcon size={14} className="text-accent-fg" />
                 <span className="flex-1 text-xs font-medium text-kumo-subtle">Balance</span>
+                {/* A fee was just paid: the figure is the last one before it, until the chain confirms the change. */}
+                {d.updating && <span className="text-[11px] text-kumo-subtle">Updating after a fee</span>}
               </span>
               <span className="text-2xl font-bold tracking-[-0.4px] text-kumo-default tabular-nums">{dust(d.balance)} <span className="text-sm font-semibold text-kumo-subtle">DUST</span></span>
               {fill != null && <Progress value={fill} label="DUST balance against its cap" />}

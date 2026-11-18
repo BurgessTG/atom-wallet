@@ -117,6 +117,11 @@ export function toDate(value) {
 
 export const dateTime = value => toDate(value)?.toLocaleString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' }) ?? '—';
 export const dayOnly = value => toDate(value)?.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) ?? '—';
+/** The browser's local calendar day of a moment, as YYYY-MM-DD (what a date input holds). */
+export const localDay = value => {
+  const d = toDate(value);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+};
 
 /** What the engine is doing right now, in the words shown on Home, Send and approvals. */
 const BUSY_TEXT = {
