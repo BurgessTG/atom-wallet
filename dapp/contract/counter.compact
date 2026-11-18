@@ -1,0 +1,19 @@
+// The test dApp's contract: a public counter anyone can increase. Small
+// circuits with no witnesses, so a call proves quickly and the round trip
+// through the wallet's connector (balance, prove, sign, submit) is what gets
+// exercised. `deposit` also takes NIGHT from the caller, so the wallet has
+// to add its own unshielded coins when it balances the call.
+pragma language_version >= 0.20;
+
+import CompactStandardLibrary;
+
+export ledger round: Counter;
+
+export circuit increment(): [] {
+  round.increment(1);
+}
+
+export circuit deposit(amount: Uint<128>): [] {
+  receiveUnshielded(nativeToken(), disclose(amount));
+  round.increment(1);
+}

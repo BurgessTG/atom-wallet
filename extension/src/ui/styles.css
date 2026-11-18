@@ -1,0 +1,43 @@
+/* Kumo (Cloudflare's design system) on Tailwind CSS v4. Order matters:
+   Kumo's theme tokens must be registered before Tailwind. */
+@source "../../../node_modules/@cloudflare/kumo/dist/**/*.{js,jsx,ts,tsx}";
+@source "./";
+@source "../../popup.html";
+@source "../../approve.html";
+@import "@cloudflare/kumo/styles";
+@import "tailwindcss";
+
+/* Blue for text and icons on neutral surfaces (links, MAX, the active tab):
+   Kumo's brand blue, lifted in dark mode where it would be too dim. */
+@theme {
+  --color-accent-fg: #056dff;
+}
+[data-mode="dark"] {
+  --color-accent-fg: #50a2ff;
+}
+
+@layer base {
+  html,
+  body {
+    @apply bg-kumo-canvas text-kumo-default antialiased;
+  }
+}
+
+/* The popup's scrolling middle: a 4px rounded thumb 3px from the edge, no
+   track. (Chromium ignores these if scrollbar-width/-color are set.) */
+.scroll-area::-webkit-scrollbar {
+  width: 7px;
+}
+.scroll-area::-webkit-scrollbar-thumb {
+  border: 3px solid transparent;
+  border-left-width: 0;
+  border-radius: 5px;
+  background: var(--color-kumo-interact) padding-box;
+}
+
+/* Toasts sit above the popup's bottom bar (the 60px tab bar, or a pinned
+   action footer) instead of covering it while they show. Kumo's viewport is
+   fixed to the bottom corner and takes no position of its own. */
+body:has(nav, footer) .fixed.bottom-4.z-1 {
+  bottom: 76px;
+}

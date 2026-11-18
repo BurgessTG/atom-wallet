@@ -1,0 +1,79 @@
+{
+  "manifest-version": "1",
+  "compiler-version": "0.36.1",
+  "compiler-commit": "7fa3a117c5e7efe9d2c51da04263e5f0b3509144",
+  "language-version": "0.28.0",
+  "runtime-version": "0.21.0",
+  "compiler": {
+    "type": "directory",
+    "contract-info.json": {
+      "type": "file",
+      "size": 927,
+      "hash": "05d52f3035ec43cf02897932aa5f7717fe3cbb53c17bbe90211b594a0ac68b18"
+    }
+  },
+  "contract": {
+    "type": "directory",
+    "index.d.ts": {
+      "type": "file",
+      "size": 1724,
+      "hash": "08d9b5d402ace75748418420ec3afcca77d34b50c81986752a47f3c2008afbfa"
+    },
+    "index.js": {
+      "type": "file",
+      "size": 18048,
+      "hash": "086bd545991ba8d78d86cb8a2ded6bcaa7487feb395e11cd3086eecc1f5670a1"
+    },
+    "index.js.map": {
+      "type": "file",
+      "size": 852,
+      "hash": "7b8c2ab9876c7c9bb163e43a1e449bbfd64b12789cbdd711f6b5fe3d2247546f"
+    }
+  },
+  "zkir": {
+    "type": "directory",
+    "deposit.bzkir": {
+      "type": "file",
+      "size": 533,
+      "hash": "feec6d5ff3436c37e86b75675d8d370d2f24932da8e40715e814d44961b24a41"
+    },
+    "deposit.zkir": {
+      "type": "file",
+      "size": 1618,
+      "hash": "2bc766120d072aee82fda806912c29c81cc2ab9d4f923407613f5822d994eb44"
+    },
+    "increment.bzkir": {
+      "type": "file",
+      "size": 102,
+      "hash": "5a47eac4e5660793ad2cfb49acf773a24707498773a4b23f88eb4e53e6e3598c"
+    },
+    "increment.zkir": {
+      "type": "file",
+      "size": 362,
+      "hash": "6b894828e34f757fec5df0e5872a5fbede9c7cb8fa2fbbb20c7e827717914670"
+    }
+  },
+  "keys": {
+    "type": "directory",
+    "deposit.prover": {
+      "type": "file",
+      "size": 113893,
+      "hash": "aea7d9ee7b6fb47c2d743e3f3704bff81da3288879cea6e794bfadcc55d0ab3c"
+    },
+    "deposit.verifier": {
+      "type": "file",
+      "size": 1353,
+      "hash": "03b624584789c31cf085414d211170a662aa56baa0e9b6b38ab312e5d2de6f15"
+    },
+    "increment.prover": {
+      "type": "file",
+      "size": 58166,
+      "hash": "6fa13f54b055be31d4809c59dfd96b08e809641f43bc0d83951cbfb4162ac010"
+    },
+    "increment.verifier": {
+      "type": "file",
+      "size": 1353,
+      "hash": "e5e72349fbd569eb276a3945165659fc68daebc58b94a1d66e52b977027924ef"
+    }
+  }
+}

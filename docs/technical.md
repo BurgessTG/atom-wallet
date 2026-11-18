@@ -1,0 +1,452 @@
+# Technical overview
+
+How mdwa works, what it implements, how to build it, and its limits. For a
+short introduction, see the [README](../README.md). The dApp connector has its
+own page: [dApp connector](dapp-connector.md).
+
+- [Architecture](#architecture)
+- [Networks and endpoints](#networks-and-endpoints)
+- [How sync works](#how-sync-works)
+- [Keys and unlocking](#keys-and-unlocking)
+- [Proving](#proving)
+- [Sending and DUST](#sending-and-dust)
+- [Custom tokens](#custom-tokens)
+- [The popup](#the-popup)
+- [Building from source](#building-from-source)
+- [Security model and limits](#security-model-and-limits)
+- [Repository layout](#repository-layout)
+
+## Architecture
+
+```mermaid
+flowchart LR
+  subgraph page["dApp page"]
+    dapp["dApp"] --> inject["window.midnight[uuid]<br/>(MAIN world, inject.js)"]
+  end
+  inject --> content["content script<br/>(isolated world)"]
+  content -- "one Port per page" --> bg["background service worker<br/>connector routing · permissions · approval windows"]
+  popup["popup / approval windows<br/>(React)"] --> bg
+  bg --> off["offscreen document"]
+  subgraph engine["engine worker"]
+    sdk["Midnight wallet SDK facade<br/>shielded · unshielded · DUST wallets<br/>ledger v9 (WASM)"]
+    vault["vault<br/>sealed seed · record key"]
+    idb[("IndexedDB<br/>sealed seed · encrypted snapshot<br/>token labels · settings")]
+    sdk --- idb
+    vault --- idb
+  end
+  off --> engine
+  engine -- "proof workers<br/>(WASM, one at a time)" --> wasm["SDK prover"]
+  engine -- "GraphQL over HTTP and WebSocket" --> indexer["Midnight indexer"]
+  engine -- "WebSocket RPC<br/>submit · finalized head" --> node["Midnight node"]
+  engine -. "optional" .-> proofserver["proof server<br/>(default localhost:6300)"]
+  wasm -. "key material" .-> srs["srs.midnight.network"]
+```
+
+The wallet is an MV3 extension, and a service worker cannot hold a long-lived
+sync or run WASM workers. So the engine lives in an **offscreen document**
+(created with the `WORKERS` reason) that hosts one dedicated worker. The
+pieces:
+
+- **Engine worker** (`engine-worker.js`, `midnight.js`, `connector.js`,
+  `tokens.js`). It owns the SDK facade of the selected network, the vault and
+  IndexedDB, and answers two method tables: `ui` (the popup) and `connector`
+  (dApps, through the background). All Midnight logic runs here, from the
+  SDK's packages. `midnight.js` has no storage and no messaging, so the same
+  code also runs under Node in `scripts/smoke.mjs`.
+- **Offscreen document** (`offscreen.js`). It relays runtime messages to the
+  worker and pushes the engine's state to every extension page.
+- **Background service worker** (`background.js`). It routes requests to the
+  engine, owns the per-site permissions in `chrome.storage.local`, runs the
+  connector's permission checks and opens the approval windows. It never holds
+  a seed. A password typed into a page passes through it to the engine and is
+  not kept.
+- **Popup and approval windows** (`extension/src/ui/`, React with Cloudflare's
+  [Kumo](https://kumo-ui.com) design system and Tailwind v4). They show what the
+  engine reports and send it requests. They load no WASM.
+- **Content scripts** (`content.js`, `inject.js`). `inject.js` installs the
+  connector object in the page's own world; `content.js` relays its calls to
+  the background. Both are small classic scripts with no packages in them, and
+  they run in every `http` and `https` page (top-level frames only, since the
+  manifest does not ask for frames).
+
+Chrome keeps an unpacked extension's background service worker across restarts
+while the manifest version is unchanged. Every build therefore carries a build
+id: pages compare it with the running background and reload the extension once
+after a rebuild (`extension/src/ui/fresh.js`).
+
+The extension's page policy allows `'wasm-unsafe-eval'` and connections to
+`localhost`, `127.0.0.1`, the default endpoints' hosts, `srs.midnight.network`
+and, because every endpoint is editable, any `https:` and `wss:` origin.
+
+## Networks and endpoints
+
+| Network | Id | Default services |
+| --- | --- | --- |
+| Preview | `preview` | `rpc.preview.midnight.network`, `indexer.preview.midnight.network` |
+| Preprod | `preprod` | Blockfrost (`midnight-preprod.blockfrost.io`), project id required |
+| Mainnet | `mainnet` | Blockfrost (`midnight-mainnet.blockfrost.io`), project id required |
+| Undeployed | `undeployed` | a local node at `ws://localhost:9944`, a local indexer at `http://localhost:8088` |
+
+Preview is the default network. The table is in
+[wallet/networks.mjs](../wallet/networks.mjs).
+
+- **Separate wallets.** Each network has its own recovery phrase, password,
+  IndexedDB database (`mdwa-<network>`), snapshot, token labels and site
+  approvals. Using one recovery phrase on two networks means restoring it on
+  both. Only the selected network syncs; switching stops it, saves its
+  snapshot and starts the other.
+- **Editable endpoints.** Settings has the node RPC, the indexer's HTTP and
+  WebSocket URLs, and, per network, the proving mode. The settings are stored
+  once for all networks in `mdwa-settings`. Changing a network's indexer URL
+  discards its snapshot, because a snapshot belongs to the indexer that
+  produced it.
+- **Blockfrost.** The project id is entered in Settings. It is appended as
+  `?project_id=` to the node and both indexer URLs when the connection is
+  made, never stored inside a URL, and never given to a dApp: what dApps see
+  (`getConfiguration`) are the base URLs. Without an id on Preprod or
+  Mainnet, the sync status says so and the wallet does not retry.
+- **Units.** NIGHT has 6 decimals (smallest unit STAR) and DUST has 15
+  (smallest unit SPECK). Other tokens have no decimals unless you label them.
+
+## How sync works
+
+```mermaid
+sequenceDiagram
+  participant U as popup
+  participant E as engine worker
+  participant S as SDK wallets<br/>(shielded · unshielded · DUST)
+  participant I as indexer
+  participant N as node
+  U->>E: unlock (password)
+  E->>E: open the sealed seed, derive the record key
+  E->>E: read the snapshot, decrypt it
+  E->>S: start from the seed, or restore from the snapshot
+  S->>I: read the chain from where each wallet stopped
+  I-->>S: events for the wallets' keys
+  Note over S,N: sync also cross-checks the indexer<br/>against the node's finalized head
+  S-->>E: state (progress per wallet, balances, history)
+  E-->>U: state, at most every 250 ms
+  loop every 60 s, and when the first sync completes
+    E->>E: serialize the wallets, encrypt, store
+  end
+  U->>E: send / register / approve
+  E->>S: build, sign, prove, bind
+  S->>N: submit
+```
+
+- **Three wallets.** The SDK facade runs a shielded, an unshielded and a DUST
+  wallet from one seed. Each reports its own progress, and the wallet counts as
+  synced when the facade says so. The popup shows the three percentages
+  separately and the mean in the header. The indexer's latest block height is
+  polled every 30 seconds for the "chain tip" line.
+- **Resume.** The engine saves a snapshot every 60 seconds, as soon as the
+  first sync completes, and when a session stops: the three wallets'
+  serialized states, the transaction history and the transaction lifecycle
+  records. It is encrypted (see [Keys and unlocking](#keys-and-unlocking)).
+  After a browser restart the wallets restore from it and read only what is
+  new. A snapshot the SDK cannot read is ignored as a whole, so the parts
+  never disagree about where they are.
+- **Restore.** A restored wallet syncs from the start of the chain. There is no
+  birthday or checkpoint, so a restore on a long chain takes as long as the
+  indexer takes to serve it.
+- **Rescan.** Settings has a Rescan that deletes the snapshot and syncs again.
+  The wallet's notes about transactions it made itself are kept.
+- **Failures.** If the connection fails, the engine retries after 2 seconds,
+  doubling up to 60 seconds. The status shows the error in the meantime.
+- **Locked means not syncing.** The SDK needs the shielded and DUST secret
+  keys to read the chain, so a locked network does not sync at all.
+- **Spent coins.** A transaction the wallet builds books the coins it spends.
+  Cancelling a review, or letting a preview expire (10 minutes), gives them
+  back.
+
+## Keys and unlocking
+
+- **The seed.** A new wallet has 24 words from the SDK's mnemonic generator;
+  a restore takes 12, 15, 18, 21 or 24 words, checked with the SDK's
+  validator. The 64-byte BIP-39 seed (English word list, no passphrase)
+  is the wallet. The SDK derives the unshielded, shielded and DUST keys from
+  it. The three addresses are derived at creation and stored with the wallet,
+  so they are shown while the wallet is locked.
+- **Sealing.** The seed is encrypted with a key from your password: PBKDF2
+  with SHA-256 (600,000 iterations) into AES-256-GCM, with a random salt and
+  IV. The password is at least 8 characters. The recovery phrase itself is
+  never stored; the wallet cannot show it again.
+- **Records.** What the wallet knows about itself says which coins it owns:
+  the SDK snapshot, the history, and its notes on its own transactions (kind,
+  site, fee). These are encrypted with an AES-256-GCM key derived from the seed
+  by HKDF, with the network in the derivation, so a record never decrypts on
+  another network. Stored in the clear: the three addresses, the token labels
+  (a name you typed or public contract data), the site approvals, and the
+  settings including the Blockfrost project id.
+- **Unlocking.** You enter the password once per browser session and network.
+  The engine keeps the seed in memory until you lock the wallet, close the
+  browser, or the engine stops. While it is unlocked, a send or an approval
+  needs a click, not the password.
+
+This differs from the Cardano sibling wallet, local-wallet, which asks for the
+password on every signature. Here it cannot. A Midnight wallet cannot follow the chain with public
+keys alone: the shielded and DUST wallets decrypt what they find with their
+secret keys, so those keys, which come from the seed, must be in memory for as
+long as the wallet syncs. So the password protects the seed at rest, and an unlocked wallet is
+protected by the approval step: every spend from the popup is a review and a
+click, and every dApp request is a window the page cannot click for you.
+
+Removing a wallet (Settings, Danger zone) asks for the password, deletes the
+network's database (sealed seed, snapshot, notes, token labels) and forgets
+the network's site approvals. Funds stay on chain.
+
+## Proving
+
+A transaction with shielded or contract parts needs zero-knowledge proofs.
+Proving is switchable per network in Settings:
+
+- **In this browser (WASM).** The SDK's own prover (`WasmProver`) runs in
+  workers of the engine. Nothing to install. Key material for Midnight's own
+  circuits and the public parameters are fetched from
+  `https://srs.midnight.network`, which the manifest lists as a host permission.
+  It is slow and memory-hungry: a send with a shielded spend measured about
+  3.5 minutes and about 3.5 GB at peak.
+- **Proof server.** A URL, `http://localhost:6300` by default (the
+  `midnightntwrk/proof-server:9.0.2` image). The wallet sends proving requests
+  to it.
+
+By default the SDK starts one proof worker per proof, and the ledger asks for
+all the proofs of a transaction at once. Each worker holds its circuit's keys and
+parameters, so a transfer with a shielded spend ran eight workers and several GB
+together, more than one browser renderer can hold; it crashed, and two at a time
+still peaked at 4 GB. So the engine builds the SDK's proving service itself,
+with the same key material and the same fork routing, and queues every `check`
+and `prove` call so that **one proof runs at a time**. The queue is one for the
+whole engine: the wallet's own proofs and the proofs a dApp asks for through
+[`getProvingProvider`](dapp-connector.md#getprovingprovider) wait in it
+together.
+
+DApp circuits are proved by the same prover you picked for the network. With a
+proof server, the dApp's key material is sent to it with each request, because
+it holds only Midnight's own.
+
+## Sending and DUST
+
+```mermaid
+flowchart LR
+  review["Review<br/>previewSend / dustPreview"] -- "balance, book coins,<br/>show recipients and fee" --> held["preview held 10 min"]
+  held -- "Send" --> sign["sign unshielded inputs"]
+  sign --> prove["prove and bind"]
+  prove --> submit["submit to the node"]
+  held -- "Edit, Back, or expiry" --> revert["revert: coins free again"]
+```
+
+- **Send.** Each recipient has an address, a token and an amount. The
+  recipient's address decides the kind: a shielded address receives a shielded
+  transfer, an unshielded address an unshielded one, and a DUST address is
+  refused (DUST cannot be sent). Addresses are checked by the SDK's Bech32m
+  codec and must be for the selected network. **MAX** gives a recipient what is
+  left of that token after the other recipients. A transaction expires 30
+  minutes after it is balanced; the review shows the time.
+- **Fees.** The network fee is paid in DUST, not in the token you send. If the
+  wallet has too little DUST, the send fails with a shortfall.
+- **One at a time.** The engine refuses a second transaction while one is being
+  balanced, proved or submitted.
+- **DUST.** NIGHT that you register for DUST generation produces DUST over
+  time, up to a cap. The DUST page shows the balance, the cap, and registered
+  against unregistered NIGHT. Register registers all unregistered NIGHT outputs;
+  Stop generating deregisters all registered ones, and what was generated stays
+  and decays slowly. A first registration pays its fee from the DUST its own
+  NIGHT has generated; when that is not enough yet, the page says so and
+  Register stays disabled until it is.
+- **Activity.** History comes from the SDK. Each transaction shows its signed
+  change per token, shielded tokens tagged, and DUST as the fee it paid. A
+  transaction made by the wallet is labelled with what it was, and a dApp's with
+  its site. Status is pending, confirmed, finalized or failed.
+
+## Custom tokens
+
+Midnight has no token registry. A token's raw type is a one-way commitment of
+a 32-byte domain separator and the minting contract's address, so a wallet
+cannot read a token's name or contract off its type. Until you name it, a custom
+token is shown as `Token` with its shortened type, and its quantity is raw.
+
+- **Labels.** A label is a name (up to 32 characters), a symbol (up to 8) and
+  decimals (0 to 18), per token type and kind (shielded or unshielded). Names
+  and symbols that read as the network's own or as the wallet (`night`,
+  `tnight`, `dust`, `tdust`, `midnight`, `mdwa`) are refused, so are control
+  and invisible characters, and two tokens cannot share a name or symbol (a
+  token's shielded and unshielded coins are the same token). NIGHT and DUST
+  cannot be renamed. Labels are local to the browser, stored per network in the
+  clear, and survive a rescan.
+- **Watch token.** The Token page, and "Add a token" on Home, take a contract
+  address (64 hex characters) and a domain separator (64 hex characters, or the
+  text a contract writes as `pad(32, "…")`). The engine recomputes the token type
+  with the ledger's `rawTokenType` and compares. With "Add a token" the label
+  applies once coins of that type arrive. A label saved after a check keeps the
+  contract address.
+- **Names from contracts.** The engine reads the contract's public state from the
+  indexer, and fills in a name, symbol and decimals only for four exact layouts of
+  OpenZeppelin's native shielded token contracts (`NativeShieldedToken`,
+  `NativeShieldedTokenCore`, `ZOwnableNativeShieldedToken` and
+  `NativeShieldedTokenIssuer`, as compiled by Compact 0.36.1). Compact keeps
+  no field names on chain, so a field can only be found by knowing the whole
+  layout. A layout is used only when every top-level field matches, the token
+  module says it is initialized, and the contract has `name`, `symbol` and
+  `decimals` entry points or the stored domain separator is the one you supplied.
+  Anything else gives no name.
+
+What the check proves is **which contract mints the token type**. It does not
+prove that the name the contract stores is honest: whoever deployed the contract
+chose it, and the page says so.
+
+## The popup
+
+The popup is 380 by 600 pixels, with light and dark themes and a network color
+for each network. It has:
+
+- a network switcher showing which networks have a wallet;
+- create and restore per network: 24 words for a new wallet, 12 to 24 for a
+  restore, and a password;
+- **Home**: the NIGHT balance, DUST available, Receive, Send and DUST actions,
+  a strip while the engine balances, proves or submits, a DUST card (balance
+  against cap, registered and unregistered NIGHT), and the unshielded and
+  shielded token lists with "Add a token";
+- a sync pill in the header, and a **Chain sync** page with the three wallets'
+  progress, the chain tip, and the node, indexer and prover in use;
+- **Receive**: the unshielded, shielded or DUST address, as text and a QR code;
+- **Send** and its **Review**, **DUST**, **Activity** (grouped by month, eight
+  per page, with a detail page and the serialized transaction), **Token**,
+  **Sites** (each approved site, its network, the permissions granted to it, and
+  Disconnect) and **Settings** (connection, proving, lock, rescan, remove wallet).
+
+Approval windows (440 by 680 pixels) are separate browser windows opened by the
+background; see [dApp connector](dapp-connector.md#approval-windows).
+
+## Building from source
+
+Prerequisites: Node and npm, and a Chromium-based browser (Chrome 116 or newer).
+No other native tooling is needed.
+
+```bash
+npm ci
+```
+
+```bash
+npm run build:extension
+```
+
+`npm run build:extension` writes the unpacked extension to `build/extension`.
+Open `chrome://extensions`, enable Developer mode, choose **Load unpacked** and
+select that folder.
+
+### Try it in Helium
+
+```bash
+npm run helium
+```
+
+This builds the extension and opens [Helium](https://helium.computer) with its
+own profile in `.helium-profile/` and the extension loaded. Your normal profile
+is not touched. `--helium /path/to/binary` points it at another Chromium-based
+browser (the default is `/Applications/Helium.app/Contents/MacOS/Helium`), and
+`--profile 2` uses `.helium-profile-2/`, for a second wallet.
+
+### How the build handles the WASM
+
+The SDK ships its ledger and proving runtimes as wasm-bindgen "bundler"
+packages, which import their `.wasm` file as an ES module. esbuild has no
+loader for that, so `scripts/esbuild-plugins.mjs` emits each `.wasm` into
+`build/extension/wasm/` and generates the module that instantiates it. The
+module's own imports (the glue code) are read from the binary at build time and
+bundled as ordinary modules, so each package exists once per bundle: a second
+copy of a ledger would make its objects fail every `instanceof` check of the
+first.
+
+- **Workers** (the engine and the SDK's two proof workers) instantiate the WASM
+  synchronously. Top-level `await` would let a worker's event loop run before its
+  message listener exists, and the SDK posts a proof job right after creating a
+  proof worker. The proof workers are emitted at `dist/` so the path the SDK
+  computes from the engine resolves.
+- **Pages** (background, offscreen, popup, approval) must not bundle a wasm
+  package: the build fails if one does. The background cannot use top-level
+  `await`, and the popup gets everything from the engine.
+- **Checks.** The build fails if a bundle contains test-only SDK code, one of
+  Node's test-only dependencies, or two copies of a ledger or ZKIR package.
+- **The rest.** Tailwind v4 with Kumo builds one stylesheet; the manifest's
+  page policy gets the default endpoints' hosts added.
+
+The build uses esbuild with `chrome116` as the target. Node's `Buffer` and
+`process` are shimmed for the SDK's address and codec packages.
+
+### Checks
+
+These scripts drive the engine and the connector under automation. Some need a
+running local Midnight network and its funded seed; see each script's header for
+its arguments.
+
+| Command | Does |
+| --- | --- |
+| `npm run smoke` | the engine's Midnight logic under Node against a real network: a fresh phrase, sync, addresses, balances, snapshot and resume; with a funded seed, sends and DUST registration |
+| `npm run check:browser` | the built extension in a browser: the engine boots under the extension's policy, a wallet on Preview syncs, lock and unlock work, the WASM prover proves in a worker |
+| `npm run check:connector` | the built extension and the test dApp in a browser, through every connector method, answering the approval windows |
+
+### The local test dApp
+
+`npm run dapp` builds and serves the test dApp on `http://localhost:5190`
+(`--port` changes it). Its packages are installed apart from the extension's, so
+its ledger copy never meets the wallet's: run `npm install --prefix dapp` once.
+`npm run dapp:contract` compiles the counter contract with Compact 0.36.1. The
+compiled output is kept in the repository, so the dApp needs no compiler to run.
+More in [dApp connector](dapp-connector.md#the-local-test-dapp).
+
+## Security model and limits
+
+- **Node and indexer are trusted for chain data.** The wallet reads the chain
+  through the node and indexer you configure, and does not verify consensus
+  itself. A malicious indexer could show invented history or balances, or hide
+  real ones. It cannot spend your funds. The SDK cross-checks the indexer
+  against the node's finalized head; that does not make either trustworthy. Use
+  endpoints you trust. What the SDK itself sends to the indexer in order to sync
+  is the SDK's and was not audited here.
+- **The seed is in memory while unlocked.** See
+  [Keys and unlocking](#keys-and-unlocking). The browser profile's disk holds the
+  sealed seed and encrypted records; the addresses, token labels, site approvals
+  and settings (including the Blockfrost project id) are not encrypted.
+- **Password strength is yours.** The only rule is 8 characters. A weak password
+  makes the sealed seed guessable offline.
+- **Sites.** A site's origin is the one Chrome reports for its connection, not
+  anything the page says. A site cannot move funds or sign without a window you
+  answer. See [dApp connector](dapp-connector.md#permission-model).
+- **Proving is slow and memory-hungry** in the browser; see [Proving](#proving).
+  A proof server is faster but is software you run, and it sees the transactions
+  you prove with it.
+- **Token names are labels.** Yours, or a contract's, never a registry's.
+- **Mainnet and Preprod sync were not exercised.** Development had no Blockfrost
+  project id. Preview and a local network (Undeployed) were. The Blockfrost
+  endpoints in the table are defaults and may need editing.
+- **One account per wallet.** One seed gives one set of three addresses; there is
+  no account switcher and no address rotation.
+- **Not implemented:** hardware wallets; sending DUST; signing data with
+  anything but the unshielded key; other swap segments than 1 in `makeIntent`;
+  a per-segment execution status in `getTxHistory` (the SDK keeps one status
+  per transaction, so only segment 0 is reported).
+- **Single-flight.** One transaction at a time, and one proof at a time.
+- **Compatibility with other Midnight wallets' phrases** was not checked.
+- **Browsers.** Built for Chrome 116 and newer; Helium is the other browser it
+  was run in.
+
+## Repository layout
+
+| Path | Contents |
+| --- | --- |
+| `extension/manifest.json` | the MV3 manifest |
+| `extension/src/background.js` | service worker: connector routing, permissions, approval windows, offscreen lifecycle |
+| `extension/src/offscreen.js` | hosts and relays to the engine worker |
+| `extension/src/engine-worker.js` | the engine: state, sessions, snapshots, the `ui` and `connector` tables |
+| `extension/src/midnight.js` | everything that talks to the wallet SDK: facade, sync state, send, DUST, history, transaction descriptions, provers |
+| `extension/src/connector.js` | the connector's engine side: balancing, previews, signing, proving transport |
+| `extension/src/tokens.js` | token labels and the watch-token check |
+| `extension/src/vault.js` | seed sealing and the record key |
+| `extension/src/db.js` | IndexedDB per network, and settings |
+| `extension/src/inject.js`, `content.js` | the page's connector object and its relay |
+| `extension/src/ui/` | popup and approval windows (React) |
+| `wallet/networks.mjs` | networks, default endpoints, Blockfrost URL handling, units |
+| `scripts/` | extension build and its esbuild plugins, Helium launcher, the smoke, browser and connector checks |
+| `dapp/` | the local test dApp: `index.html`, `app.js`, `serve.mjs`, `compile.mjs`, `contract/counter.compact` |
+| `docs/` | this documentation and its screenshots |

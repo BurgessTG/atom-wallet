@@ -1,0 +1,52 @@
+{
+  "manifest_version": 3,
+  "name": "mdwa",
+  "version": "0.1.0",
+  "description": "Midnight wallet: shielded and unshielded NIGHT, DUST and tokens, synced with the Midnight wallet SDK.",
+  "minimum_chrome_version": "116",
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "mdwa"
+  },
+  "icons": {
+    "128": "icon.png"
+  },
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "permissions": [
+    "offscreen",
+    "storage",
+    "unlimitedStorage"
+  ],
+  "host_permissions": [
+    "https://srs.midnight.network/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "http://*/*",
+        "https://*/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_start"
+    },
+    {
+      "matches": [
+        "http://*/*",
+        "https://*/*"
+      ],
+      "js": [
+        "inject.js"
+      ],
+      "run_at": "document_start",
+      "world": "MAIN"
+    }
+  ],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'; worker-src 'self'; connect-src 'self' https://srs.midnight.network http://localhost:* ws://localhost:* http://127.0.0.1:* ws://127.0.0.1:* https: wss:"
+  }
+}

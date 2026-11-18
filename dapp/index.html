@@ -1,0 +1,70 @@
+<!doctype html>
+<!-- The mdwa test dApp: one button per dApp connector method, and a
+     Midnight.js contract round trip. Served by dapp/serve.mjs (npm run dapp). -->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>mdwa test dApp</title>
+  <style>
+    body { font: 14px/1.4 system-ui, sans-serif; margin: 0; display: grid; grid-template-columns: 360px 1fr; height: 100vh; }
+    aside { padding: 16px; overflow: auto; border-right: 1px solid #ddd; }
+    main { padding: 16px; overflow: auto; background: #fafafa; }
+    h1 { font-size: 18px; display: flex; align-items: center; gap: 8px; margin: 0 0 12px; }
+    h2 { font-size: 13px; text-transform: uppercase; color: #666; margin: 16px 0 6px; }
+    button { margin: 2px; padding: 4px 8px; }
+    label { display: block; margin: 4px 0; }
+    input { width: 100%; box-sizing: border-box; }
+    pre { margin: 0 0 8px; padding: 8px; background: #fff; border-left: 3px solid #2a7; white-space: pre-wrap; word-break: break-all; }
+    pre.err { border-color: #c33; }
+    img { width: 24px; height: 24px; }
+  </style>
+</head>
+<body>
+  <aside>
+    <h1><img id="icon" alt=""> mdwa test dApp</h1>
+    <label>Network id <input id="network" value="undeployed"></label>
+    <h2>Connection</h2>
+    <button data-action="inspect">Inspect window.midnight</button>
+    <button data-action="connect">connect</button>
+    <button data-action="connectWrongNetwork">connect (wrong network)</button>
+    <button data-action="getConnectionStatus">getConnectionStatus</button>
+    <button data-action="getConfiguration">getConfiguration</button>
+    <button data-action="hintUsage">hintUsage</button>
+    <h2>Reads</h2>
+    <button data-action="getShieldedAddresses">getShieldedAddresses</button>
+    <button data-action="getUnshieldedAddress">getUnshieldedAddress</button>
+    <button data-action="getDustAddress">getDustAddress</button>
+    <button data-action="getUnshieldedBalances">getUnshieldedBalances</button>
+    <button data-action="getShieldedBalances">getShieldedBalances</button>
+    <button data-action="getDustBalance">getDustBalance</button>
+    <button data-action="getTxHistory">getTxHistory</button>
+    <h2>Signing</h2>
+    <label>Message <input id="message" value="Hello from the mdwa test dApp"></label>
+    <button data-action="signData">signData</button>
+    <h2>Transactions</h2>
+    <label>Recipient (empty: this wallet) <input id="recipient"></label>
+    <label>Amount (STAR) <input id="amount" value="1000000"></label>
+    <button data-action="makeTransfer">makeTransfer</button>
+    <button data-action="makeTransferWithoutFee">makeTransfer (payFees: false)</button>
+    <button data-action="makeShieldedTransfer">makeTransfer (shielded)</button>
+    <button data-action="balanceSealedTransaction">balanceSealedTransaction</button>
+    <button data-action="submitTransaction">submitTransaction</button>
+    <button data-action="makeIntent">makeIntent</button>
+    <button data-action="makeIntentBadSegment">makeIntent (segment 5)</button>
+    <h2>Contract (Midnight.js)</h2>
+    <label>Counter address <input id="contract"></label>
+    <button data-action="deploy">deploy</button>
+    <button data-action="increment">increment</button>
+    <label>Deposit (STAR) <input id="deposit" value="2500000"></label>
+    <button data-action="deposit">deposit</button>
+    <button data-action="readRound">read counter</button>
+    <h2>Proving transport</h2>
+    <label>Prover key size (MB) <input id="megabytes" value="80"></label>
+    <button data-action="bigKey">Push a large key</button>
+    <button data-action="badProof">Prove a bad preimage</button>
+  </aside>
+  <main id="log"></main>
+  <script type="module" src="app.js"></script>
+</body>
+</html>
