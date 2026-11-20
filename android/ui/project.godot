@@ -1,0 +1,22 @@
+config_version=5
+[application]
+config/name="MDWA"
+run/main_scene="res://wallet.tscn"
+config/features=PackedStringArray("4.7", "Mobile")
+run/low_processor_mode=true
+boot_splash/show_image=false
+boot_splash/bg_color=Color(0.043, 0.047, 0.071, 1)
+[display]
+window/size/viewport_width=412
+window/size/viewport_height=846
+window/stretch/mode="canvas_items"
+window/stretch/aspect="expand"
+window/handheld/orientation=6
+window/handheld/immersive_mode=false
+window/size/resizable=true
+[rendering]
+renderer/rendering_method="mobile"
+renderer/rendering_method.mobile="mobile"
+rendering_device/driver.android="vulkan"
+rendering_device/fallback_to_opengl3=false
+environment/defaults/default_clear_color=Color(0.043, 0.047, 0.071, 1)

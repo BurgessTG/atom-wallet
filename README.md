@@ -1,6 +1,8 @@
 # mdwa
 
-A Midnight wallet as a Chrome (MV3) extension, built on Midnight's wallet SDK.
+This fork adds a Vulkan-rendered Android client for Midnight Preview. [Build the Android APK and see the phone UI](android/README.md).
+
+The Chrome (MV3) extension is built on Midnight's wallet SDK.
 It talks to a Midnight node and indexer and works on Preview, Preprod, Mainnet
 and a local network, with a separate wallet on each.
 

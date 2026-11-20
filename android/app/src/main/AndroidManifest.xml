@@ -1,0 +1,15 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="android.permission.INTERNET"/>
+    <uses-feature android:name="android.hardware.vulkan.version" android:version="0x00401000" android:required="true"/>
+    <application android:label="MDWA" android:icon="@drawable/wallet_icon" android:allowBackup="false"
+        android:usesCleartextTraffic="false" android:theme="@android:style/Theme.Material.NoActionBar">
+        <meta-data android:name="org.godotengine.plugin.v2.WalletEngine" android:value="dev.burgesstg.mdwa.WalletEngine"/>
+        <activity android:name=".WalletActivity" android:exported="true" android:windowSoftInputMode="adjustResize"
+            android:configChanges="orientation|keyboardHidden|screenSize|smallestScreenSize|screenLayout|density|uiMode|keyboard|navigation|locale|layoutDirection|fontScale">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN"/>
+                <category android:name="android.intent.category.LAUNCHER"/>
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>

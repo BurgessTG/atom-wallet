@@ -1,0 +1,37 @@
+plugins { id 'com.android.application' version '8.7.3' }
+
+android {
+    namespace 'dev.burgesstg.mdwa'
+    compileSdk 35
+    defaultConfig {
+        applicationId 'dev.burgesstg.mdwa'
+        minSdk 28
+        targetSdk 35
+        versionCode 1
+        versionName '0.1.0'
+    }
+    splits {
+        abi {
+            enable true
+            reset()
+            include 'arm64-v8a', 'x86_64'
+            universalApk false
+        }
+    }
+    androidResources { noCompress += ['pck', 'wasm'] }
+    sourceSets.main.assets.srcDir layout.buildDirectory.dir('generated/walletAssets')
+}
+dependencies {
+    implementation 'org.godotengine:godot:4.7.2.stable'
+    implementation 'androidx.fragment:fragment:1.8.6'
+}
+
+def walletAssets = tasks.register('walletAssets', Exec) {
+    workingDir rootProject.projectDir.parentFile
+    commandLine 'node', 'scripts/build-android-assets.mjs'
+    inputs.files fileTree('../../extension'), fileTree('../../wallet'), fileTree('../worker'),
+        fileTree('../ui') { exclude '.godot/**' }, fileTree('../../scripts') { include '*.mjs' },
+        file('../../package-lock.json')
+    outputs.dir layout.buildDirectory.dir('generated/walletAssets')
+}
+tasks.named('preBuild').configure { dependsOn walletAssets }
