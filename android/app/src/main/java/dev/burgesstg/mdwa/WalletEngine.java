@@ -32,7 +32,8 @@ public final class WalletEngine extends GodotPlugin {
     private boolean active = true;
     private boolean started;
     private final Handler main = new Handler(Looper.getMainLooper());
-    private final Runnable bootTimeout = () -> fail("The wallet engine did not start. Update Android System WebView and retry.");
+    private final Runnable bootTimeout = () -> emitSignal("message",
+        "{\"type\":\"slow\",\"message\":\"The wallet engine is still starting. You can keep waiting or retry.\"}");
 
 
     public WalletEngine(Godot godot) { super(godot); }
@@ -90,8 +91,14 @@ public final class WalletEngine extends GodotPlugin {
                 WebMessagePort[] pair = v.createWebMessageChannel();
                 requests = pair[0];
                 requests.setWebMessageCallback(new WebMessagePort.WebMessageCallback() {
+                    private boolean connected;
+
                     @Override public void onMessage(WebMessagePort port, WebMessage message) {
                         if (!active || engineView != v || message.getData() == null) return;
+                        if (!connected && message.getData().startsWith("{\"type\":\"state\"")) {
+                            connected = true;
+                            android.util.Log.i("MDWA", "Wallet worker ready");
+                        }
                         main.removeCallbacks(bootTimeout);
                         emitSignal("message", message.getData());
                     }
@@ -118,11 +125,6 @@ public final class WalletEngine extends GodotPlugin {
             close();
             open();
         });
-    }
-
-    private void fail(String reason) {
-        close();
-        emitSignal("message", "{\"type\":\"fatal\",\"message\":" + org.json.JSONObject.quote(reason) + "}");
     }
 
     private void close() {

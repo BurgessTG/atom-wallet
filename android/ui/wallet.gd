@@ -66,6 +66,10 @@ func _message(raw: String) -> void:
 	var msg = JSON.parse_string(raw)
 	if not msg is Dictionary: return
 	match msg.get("type", ""):
+		"slow":
+			if live_state.is_empty() and not demo:
+				boot_error = msg.message
+				draw_page()
 		"closed", "fatal":
 			pending.clear()
 			refreshing = false
