@@ -1,7 +1,10 @@
 # Run with godot --path android/ui --script ../check-ui.gd
+# Set MDWA_TEST_VIEWPORT=WxH to check another size; widths of 600 or more use
+# the unfolded layout (side rail, centred dialogs, two columns).
 extends SceneTree
 
 const M = preload("res://model.gd")
+const D = preload("res://design.gd")
 var wallet: Control
 var failed := false
 var touch_count := 0
@@ -18,8 +21,27 @@ class TestEngine extends RefCounted:
 	var available := M.SAMPLE.duplicate(true)
 	var second_token := "e".repeat(64)
 
+	var bio_enabled := false
+	var bio_password := ""
+	var shared := []
+	var haptics := 0
+	var auto_lock := -1
+
 	func retryEngine():
 		retries += 1
+
+	# Android plugin methods the UI reaches through native().
+	func biometricStatus(_network): return JSON.stringify({"available":true,"enabled":bio_enabled})
+	func enableBiometric(_network, password):
+		bio_password = password; bio_enabled = true
+		wallet._message.call_deferred(JSON.stringify({"type":"biometric","event":"enabled"}))
+	func disableBiometric(_network): bio_enabled = false
+	func unlockWithBiometric(_network):
+		wallet._message.call_deferred(JSON.stringify({"type":"biometric","event":"password","password":bio_password}))
+	func haptic(_kind): haptics += 1
+	func share(text): shared.append(text)
+	func scanQr(): wallet._message.call_deferred(JSON.stringify({"type":"scan","value":"midnight:mn_addr_preview1scanned"}))
+	func setAutoLock(seconds): auto_lock = seconds
 
 	func request(raw: String):
 		var message: Dictionary = JSON.parse_string(raw)
@@ -27,13 +49,10 @@ class TestEngine extends RefCounted:
 		var result
 		match message.method:
 			"generateMnemonic":
-				var words := []
-				words.resize(24)
-				words.fill("abstract")
-				result = {"words":words}
+				result = {"words":M.wordlist().slice(100,124)}
 			"overview": result = available
 			"walletHome": result = {"overview":available,"recent":M.HISTORY.slice(0,3)}
-			"settings": result = {"birthday":{"height":100},"endpoints":{"preview":entry},"defaults":{"preview":entry}}
+			"settings": result = {"birthday":{"height":100},"endpoints":{"preview":entry,"preprod":entry,"mainnet":entry},"defaults":{"preview":entry,"preprod":entry,"mainnet":entry}}
 			"chainReceipt":
 				receipt_reads += 1
 				result = {"hash":message.params.hash,"block":123,"execution":"SUCCESS","fee":"100"} if receipt_reads>1 else null
@@ -63,6 +82,7 @@ class TestEngine extends RefCounted:
 			_: result = {}
 		wallet._message.call_deferred(JSON.stringify({"id":message.id,"result":result}))
 
+
 func _initialize() -> void:
 	run.call_deferred()
 
@@ -71,38 +91,72 @@ func check(ok: bool, message: String) -> void:
 		failed = true
 		push_error(message)
 
-func tap(title: String, occurrence := 0) -> void:
-	await process_frame
-	await process_frame
-	if wallet.sheet_tween and wallet.sheet_tween.is_running(): await create_timer(.24).timeout
+func settle() -> void:
+	for i in 3: await process_frame
+
+func find_button(title: String, occurrence := 0) -> Button:
 	for item in wallet.find_children("*","Button",true,false):
 		if item.accessibility_name == title and item.is_visible_in_tree():
-			if wallet.page in wallet.DRAWERS and not wallet.sheet.is_ancestor_of(item) and not wallet.header.is_ancestor_of(item): continue
+			if wallet.page in wallet.DRAWERS and is_instance_valid(wallet.sheet) and not wallet.sheet.is_ancestor_of(item) and not wallet.header.is_ancestor_of(item): continue
 			if occurrence > 0:
 				occurrence -= 1
 				continue
-			if wallet.scroll.is_ancestor_of(item):
-				wallet.scroll.ensure_control_visible(item)
-				await process_frame
-			check(item.size.x >= 48 and item.size.y >= 48, "Undersized tap target "+title)
-			var pos: Vector2 = item.get_global_rect().get_center()
-			check(root.get_visible_rect().has_point(pos), "Unreachable tap target "+title)
-			check(not item.disabled, "Disabled tap target "+title)
-			for control in wallet.frame.find_children("*","Control",true,false):
-				if control.is_visible_in_tree() and (control is Label or control is BaseButton or control is LineEdit):
-					var bounds: Rect2 = control.get_global_rect()
-					check(bounds.position.x >= -1 and bounds.end.x <= wallet.size.x+1, "Horizontal overflow on "+wallet.page+" ("+control.get_class()+") "+str(bounds))
-			for pressed in [true,false]:
-				var event := InputEventScreenTouch.new()
-				event.index = 0
-				event.pressed = pressed
-				event.position = pos
-				root.push_input(event, true)
-			await process_frame
-			if wallet.sheet_tween and wallet.sheet_tween.is_running(): await create_timer(.24).timeout
-			touch_count += 1
-			return
-	check(false, "Missing button " + title)
+			return item
+	return null
+
+func reach(item: Button, title: String) -> Vector2:
+	if is_instance_valid(wallet.scroll) and wallet.scroll.is_ancestor_of(item):
+		wallet.scroll.ensure_control_visible(item)
+		await settle()
+	check(item.size.x >= 48 and item.size.y >= 48, "Undersized tap target "+title)
+	var pos: Vector2 = item.get_global_rect().get_center()
+	check(root.get_visible_rect().has_point(pos), "Unreachable tap target "+title)
+	check(not item.disabled, "Disabled tap target "+title)
+	for control in wallet.frame.find_children("*","Control",true,false):
+		if control.is_visible_in_tree() and (control is Label or control is BaseButton or control is LineEdit):
+			var bounds: Rect2 = control.get_global_rect()
+			check(bounds.position.x >= -1 and bounds.end.x <= wallet.size.x+1, "Horizontal overflow on "+wallet.page+" ("+control.get_class()+" "+str(control.get("text")).left(30)+") "+str(bounds))
+	return pos
+
+func touch(pos: Vector2, pressed: bool) -> void:
+	var event := InputEventScreenTouch.new()
+	event.index = 0
+	event.pressed = pressed
+	event.position = pos
+	root.push_input(event, true)
+
+func tap(title: String, occurrence := 0) -> void:
+	await settle()
+	var item := find_button(title, occurrence)
+	if not item:
+		check(false, "Missing button " + title + " on " + wallet.page)
+		return
+	var pos: Vector2 = await reach(item, title)
+	touch(pos, true); touch(pos, false)
+	await settle()
+	touch_count += 1
+
+# Press and hold a confirmation button until it completes.
+func hold(title: String) -> void:
+	await settle()
+	var item := find_button(title)
+	if not item:
+		check(false, "Missing hold button " + title + " on " + wallet.page)
+		return
+	var pos: Vector2 = await reach(item, title)
+	touch(pos, true)
+	await create_timer(0.3).timeout
+	check(not item.done, "Hold completed too early: " + title)
+	await create_timer(0.75).timeout
+	touch(pos, false)
+	await settle()
+	touch_count += 1
+
+func fields() -> Array:
+	return wallet.body.find_children("*","LineEdit",true,false)
+
+func texts() -> Array:
+	return wallet.frame.find_children("*","Label",true,false).filter(func(l): return l.is_visible_in_tree()).map(func(l): return l.text)
 
 func drag_from_button() -> void:
 	var area: ScrollContainer = wallet.scroll
@@ -114,14 +168,11 @@ func drag_from_button() -> void:
 			break
 	if not candidate or area.get_v_scroll_bar().max_value <= area.size.y: return
 	var at := candidate.get_global_rect().get_center()
-	var down := InputEventScreenTouch.new()
-	down.pressed = true; down.position = at
-	root.push_input(down,true)
+	touch(at, true)
 	var motion := InputEventScreenDrag.new()
 	motion.position = at-Vector2(0,60); motion.relative = Vector2(0,-60)
 	root.push_input(motion,true)
-	var up := InputEventScreenTouch.new()
-	up.position = motion.position; root.push_input(up,true)
+	touch(motion.position, false)
 	check(wallet.page==original_page and area.scroll_vertical>0,"Swipe starting on a control activated it or failed to scroll")
 	area.scroll_vertical=0
 
@@ -130,16 +181,19 @@ func run() -> void:
 	if dimensions.size()==2:
 		root.content_scale_mode=Window.CONTENT_SCALE_MODE_DISABLED
 		root.size=Vector2i(int(dimensions[0]),int(dimensions[1]))
+	D.motion = 0.0
+	DirAccess.remove_absolute(ProjectSettings.globalize_path("user://check-prefs.cfg"))
 	wallet = load("res://wallet.tscn").instantiate()
+	wallet.prefs_path = "user://check-prefs.cfg"
 	root.add_child(wallet)
 	check(M.atomic_amount("10000000000000000.000001",6) == "10000000000000000000001","Large amount changed")
 	check(M.atomic_amount("0.0000001",6) == "" and M.atomic_amount("-1",6) == "" and M.atomic_amount("0",6) == "","Invalid amount accepted")
 	check(M.atomic_amount("1.1",0) == "" and M.atomic_amount("0.001",3) == "1","Token units changed")
 	check(M.exceeds("100000000000000000001","100000000000000000000"),"Large overspend accepted")
 	check(M.units("42600000000000000",15) == "42.6","Incorrect DUST precision")
-	await tap("Explore demo wallet")
-	check(wallet.page == "home","Demo did not open")
-	await process_frame
+	check(M.wordlist().size() == 2048 and M.is_word("zoo") and not M.is_word("zooo") and M.complete("aba") == ["abandon"],"BIP-39 word list wrong")
+	await tap("Try the demo")
+	check(wallet.page == "home" and wallet.demo,"Demo did not open")
 	for label in wallet.body.find_children("*","Label",true,false):
 		if label.text=="2,840.75": check(label.get_line_count()==1,"Balance wrapped across multiple lines")
 	wallet._message(JSON.stringify({"type":"fatal","message":"Test worker stopped"}))
@@ -148,41 +202,48 @@ func run() -> void:
 		RenderingServer.force_draw()
 		root.get_texture().get_image().save_png(OS.get_cmdline_user_args()[0])
 	await tap("Send")
+	check(wallet.page == "send" and wallet.sheet_open,"Send sheet did not open")
 	await drag_from_button()
 	await tap("Use sample transfer")
-	await tap("Review transfer")
+	await tap("Review")
 	check(wallet.page == "review","Review not reached")
-	await tap("Finish demo")
+	await hold("Hold to send")
 	check(wallet.page == "sent","Demo confirmation failed")
 	await tap("Back to wallet")
 	await tap("Send")
-	await tap("Shielded")
+	await tap("Choose asset")
+	check(wallet.page == "choose_token","Asset picker did not open")
+	await tap("Select Demo token")
+	check(wallet.page == "send" and wallet.send_kind == "shielded","Private asset not selected")
 	await tap("Use sample transfer")
-	await tap("Review transfer")
-	check(wallet.page == "review" and wallet.preview.outputs[0].kind == "shielded" and wallet.preview.outputs[0].type == M.DEMO_TYPE and wallet.preview.outputs[0].amount == "1","Shielded review used the wrong asset")
+	await tap("Review")
+	check(wallet.page == "review" and wallet.preview.outputs[0].kind == "shielded" and wallet.preview.outputs[0].type == M.DEMO_TYPE and wallet.preview.outputs[0].amount == "1","Private review used the wrong asset")
 	await tap("Back")
-	check(wallet.recipient == "Demo recipient" and wallet.amount == "1","Review lost its draft")
-	await tap("Review transfer")
-	await tap("Finish demo")
+	check(wallet.page == "send" and wallet.recipient == "Demo recipient" and wallet.amount == "1","Review lost its draft")
+	await tap("Review")
+	await hold("Hold to send")
 	await tap("Back to wallet")
 	await tap("Receive")
-	await tap("Shielded")
+	await tap("Private")
 	check(wallet.receive_kind == "shielded","Address selector failed")
-	await tap("Back")
+	await tap("Close")
+	check(wallet.page == "home" and not wallet.sheet_open,"Receive sheet did not close")
 	await tap("DUST generation")
 	check(wallet.page == "dust","DUST view failed")
 	await tap("Register NIGHT")
 	check(wallet.page == "dust_review","DUST review failed")
-	await tap("Confirm registration")
+	await hold("Hold to confirm")
 	check(wallet.page == "dust","DUST confirmation failed")
+	await tap("Back")
 	await tap("Activity")
 	await tap("Details")
 	check(wallet.detail.get("kind") == "receive","Activity did not open the selected item")
-	await tap("Back")
+	if wallet.page == "detail": await tap("Back")
 	await tap("Settings")
-	await tap("Exit demo wallet")
+	await tap("Exit demo")
 	check(wallet.page == "welcome" and wallet.overview.is_empty(),"Demo data escaped its session")
 	await bridge_checks()
+	DirAccess.remove_absolute(ProjectSettings.globalize_path("user://check-prefs.cfg"))
 	if not failed: print("Wallet UI checks passed at ",root.get_visible_rect().size,": ",touch_count," taps")
 	quit(1 if failed else 0)
 
@@ -190,150 +251,196 @@ func bridge_checks():
 	var engine := TestEngine.new()
 	engine.wallet = wallet
 	engine.available.shielded.append({"type":engine.second_token,"amount":"12345"})
-	var state := {"network":"preview","hasWallet":false,"locked":true,"sync":{"status":"synced"},"addresses":{"shielded":"test shielded address","unshielded":"test public address","dust":"test dust address"}}
+	var state := {"network":"preview","hasWallet":false,"locked":true,"sync":{"status":"synced","tip":100},
+		"networks":[{"id":"preview","name":"Preview","hasWallet":false},{"id":"preprod","name":"Preprod","hasWallet":false},{"id":"mainnet","name":"Mainnet","hasWallet":false}],
+		"addresses":{"shielded":"test shielded address","unshielded":"test public address","dust":"test dust address"}}
 	wallet.bridge = engine
 	wallet._message(JSON.stringify({"type":"state", "state":state}))
-	await tap("Test local prover")
-	check("verified" in wallet.proof_status,"Missing proof check result")
+	await tap("Create a new wallet")
+	check(wallet.page == "phrase" and wallet.words.size() == 24,"Phrase page missing")
+	check(find_button("I've written it down").disabled,"Phrase could be confirmed before it was revealed")
+	await tap("Reveal phrase")
+	check(wallet.phrase_revealed,"Phrase did not reveal")
+	await tap("I've written it down")
+	check(wallet.page == "verify" and wallet.verify_slots.size() == 3,"Verify step missing")
+	var first: Dictionary = wallet.verify_slots[0]
+	var wrong: String = first.options.filter(func(o): return o != wallet.words[first.index])[0]
+	await tap(wrong)
+	check(wallet.verify_slots[0].picked == "","Wrong word accepted")
+	for i in 3:
+		var right: String = wallet.words[wallet.verify_slots[i].index]
+		var before := 0
+		for j in i: before += int(right in wallet.verify_slots[j].options)
+		await tap(right, before)
+	check(wallet.verify_slots.all(func(s): return s.picked == wallet.words[s.index]),"Correct words not accepted")
+	await tap("Continue")
+	check(wallet.page == "create","Password step missing")
 	await tap("Create wallet")
-	await tap("I saved my phrase")
+	check("passwords" in wallet.feedback.text,"Missing password check")
+	var f := fields()
+	f[0].text="test password"; f[1].text="test password"
 	await tap("Create wallet")
-	check("last word" in wallet.feedback.text,"Missing phrase confirmation")
-	var fields: Array = wallet.body.find_children("*","LineEdit",true,false)
-	fields[0].text="abstract"; fields[1].text="test password"; fields[2].text="test password"
-	await tap("Create wallet")
-	check(engine.calls.back().method=="createWallet" and not engine.calls.back().params.restore,"Create request failed")
+	var created = engine.calls.filter(func(c): return c.method=="createWallet")
+	check(created.size()==1 and not created[0].params.restore and created[0].params.mnemonic == " ".join(M.wordlist().slice(100,124)),"Create request failed")
+	check(engine.bio_enabled and engine.bio_password == "test password","Biometric unlock was not enabled at creation")
 	wallet.go("welcome")
+	await tap("I already have a wallet")
+	f = fields()
+	f[0].text="fixture"; f[1].text="test password"; f[2].text="test password"
 	await tap("Restore wallet")
-	fields = wallet.body.find_children("*","LineEdit",true,false)
-	fields[0].text="fixture"; fields[1].text="test password"; fields[2].text="test password"
+	check("12 or 24" in wallet.feedback.text,"Short phrase accepted")
+	f[0].text=" ".join(M.wordlist().slice(0,12))
 	await tap("Restore wallet")
-	check(engine.calls.back().params.restore,"Restore request failed")
+	check(engine.calls.back().method == "createWallet" and engine.calls.back().params.restore,"Restore request failed")
 	state.hasWallet=true
 	wallet._message(JSON.stringify({"type":"state","state":state}))
-	wallet.body.find_children("*","LineEdit",true,false)[0].text="test password"
-	await tap("Unlock wallet")
-	check(engine.calls.back().method=="unlock","Unlock request failed")
+	await settle()
+	check(engine.calls.any(func(c): return c.method=="unlock" and c.params.password=="test password"),"Biometric unlock did not open the wallet")
+	await create_timer(0.1).timeout
+	fields()[0].text="test password"
+	await tap("Unlock")
+	check(engine.calls.back().method=="unlock","Password unlock failed")
 	state.locked=false
 	wallet._message(JSON.stringify({"type":"state","state":state}))
-	await process_frame
+	await settle()
 	await tap("Send")
-	await tap("Shielded")
-	await tap("Choose token")
-	await tap("Select",1)
+	await tap("Choose asset")
+	await tap("Select Test asset")
+	check(wallet.send_kind == "shielded" and wallet.token_type == engine.second_token,"Labelled private token not selected")
 	if DisplayServer.get_name() != "headless":
 		DisplayServer.clipboard_set(state.addresses.shielded)
 		await tap("Paste")
 		check(wallet.recipient==state.addresses.shielded,"Clipboard recipient did not populate")
-	await tap("Use my address")
-	fields = wallet.body.find_children("*","LineEdit",true,false)
-	fields[1].text="12.346"
-	await tap("Review transfer")
-	check(wallet.page=="send" and "exceeds" in wallet.feedback.text,"Overspend accepted")
-	fields[1].text="12.345"
-	await tap("Review transfer")
-	check(wallet.page=="review" and wallet.preview.outputs==[{"kind":"shielded","type":engine.second_token,"recipient":state.addresses.shielded,"amount":"12345"}],"Shielded token label, recipient or precision lost")
+	await tap("My address")
+	f = fields()
+	f[1].text="12.346"
+	await tap("Review")
+	check(wallet.page=="send" and "available" in wallet.feedback.text,"Overspend accepted")
+	f[1].text="12.345"
+	await tap("Review")
+	check(wallet.page=="review" and wallet.preview.outputs==[{"kind":"shielded","type":engine.second_token,"recipient":state.addresses.shielded,"amount":"12345"}],"Private token label, recipient or precision lost")
 	await tap("Back")
 	check(engine.calls.any(func(c):return c.method=="cancel" and c.params.id=="recipe"),"Back did not release booked coins")
-	await tap("Review transfer")
-	await tap("Confirm and send")
+	await tap("Review")
+	await hold("Hold to send")
 	check(wallet.page=="sent" and wallet.last_tx=="test-id","Send did not reach receipt")
-	await process_frame
-	var timed: Array = wallet.body.find_children("*","Label",true,false).map(func(label):return label.text)
-	check("GPU · output" in timed and "1.7s" in timed and "Partially successful" in timed,"Finalized timing or indexed execution status missing")
-	await tap("Back to wallet")
+	await settle()
+	var timed := texts()
+	check("1.7s" in timed and "Partially successful" in timed and not ("GPU · output" in timed),"Finalized timing or indexed execution status missing")
+	check(engine.haptics > 0,"No haptic feedback")
+	await tap("Done")
+	await tap("Scan")
+	await settle()
+	check(wallet.page=="send" and wallet.recipient=="mn_addr_preview1scanned" and wallet.send_kind=="unshielded","Scanned payment link did not fill Send")
+	await tap("Close")
 	await tap("Receive")
-	await tap("DUST")
-	await tap("Unshielded")
-	await tap("Back")
+	await tap("Share")
+	check(engine.shared == ["test public address"],"Share sheet did not get the address")
+	await tap("Close")
+	await tap("Hide balances")
+	check("••••••" in texts(),"Balances not hidden")
+	await tap("Show balances")
 	await tap("DUST generation")
 	await tap("Stop generation")
-	await tap("Confirm deregistration")
+	await hold("Hold to confirm")
 	check(engine.calls.any(func(c):return c.method=="dustApply"),"DUST request missing")
-	await tap("Back to wallet")
+	await tap("Done")
 	await tap("Activity")
-	await tap("Next")
-	check(wallet.history_offset==12 and wallet.history.size()==1,"Next page not loaded")
-	await tap("Previous")
-	check(wallet.history_offset==0 and wallet.history.size()==3,"Previous page not loaded")
+	await tap("Show more")
+	check(engine.calls.back().method=="history" and engine.calls.back().params.limit==60,"More history not requested")
+	await tap("Explore")
+	check(find_button("mdwa test dApp") == null,"Developer tools visible without developer mode")
 	await tap("Settings")
-	await tap("Wallet")
-	check(wallet.page=="home","Wallet tab did not restore the overview")
+	await tap("Developer mode")
+	check(wallet.prefs.developer,"Developer mode did not turn on")
 	await tap("Explore")
 	await tap("mdwa test dApp")
 	await tap("Token contract")
 	await tap("Deploy contract")
 	check(wallet.page=="contract_review" and wallet.preview.action=="deploy","Deployment review missing")
-	await tap("Confirm deployment")
-	await tap("Back to wallet")
+	await hold("Hold to confirm")
+	await tap("Done")
 	await tap("Explore")
 	await tap("mdwa test dApp")
 	await tap("Token contract")
-	await tap("Mint unshielded")
+	await tap("Mint public")
 	check(wallet.preview.action=="mintUnshielded","Wrong public mint action")
 	await tap("Back")
-	await tap("Mint shielded")
-	check(wallet.preview.action=="mintShielded","Wrong shielded mint action")
-	await tap("Confirm mint")
-	await tap("Back to wallet")
+	await tap("Mint private")
+	check(wallet.preview.action=="mintShielded","Wrong private mint action")
+	await hold("Hold to confirm")
+	await tap("Done")
 	await tap("Explore")
 	await tap("mdwa test dApp")
 	await tap("Counter contract")
 	await tap("Deploy contract")
-	await tap("Confirm deployment")
-	await tap("Back to wallet")
+	await hold("Hold to confirm")
+	await tap("Done")
 	await tap("Explore")
 	await tap("mdwa test dApp")
 	await tap("Counter contract")
 	await tap("Increment counter")
 	check(wallet.preview.action=="increment","Incorrect counter call")
-	await tap("Confirm increment")
-	await tap("Back to wallet")
-	await tap("Edit token label")
-	fields = wallet.body.find_children("*","LineEdit",true,false)
-	fields[0].text="Glass token"; fields[1].text="GLASS"; fields[2].text="0"
+	await hold("Hold to confirm")
+	await tap("Done")
+	await tap("Edit token label", 1)
+	f = fields()
+	check(wallet.page=="token_label" and f[2].text=="3","Saved decimals did not load as a whole number")
+	f[0].text="Glass token"; f[1].text="GLASS"
 	await tap("Save label")
-	check(wallet.page=="home" and engine.calls.any(func(c):return c.method=="setTokenLabel"),"Label not saved")
+	check(wallet.page=="home" and engine.calls.any(func(c):return c.method=="setTokenLabel" and c.params.decimals==3),"Label not saved")
 	engine.available.unshielded = []
+	engine.available.shielded = []
 	await tap("Send")
-	await tap("Receive unshielded tokens")
-	check(wallet.page=="receive" and wallet.receive_kind=="unshielded","Empty public balance opened the wrong receive form")
-	await tap("Back")
+	await tap("Receive tokens")
+	check(wallet.page=="receive","Empty balance did not offer Receive")
+	await tap("Close")
 	await tap("Settings")
-	await tap("Connection")
-	await tap("Save connection")
-	await tap("Connection")
+	await tap("Chain")
+	await tap("Preprod")
+	check(engine.calls.any(func(c):return c.method=="selectNetwork" and c.params.network=="preprod"),"Chain switch not requested")
+	await tap("Custom endpoints")
+	await tap("Save endpoints")
+	await tap("Custom endpoints")
 	await tap("Restore defaults")
+	await tap("Back")
 	await tap("Proving")
 	await tap("Proof server")
 	await tap("Save proving")
 	check(engine.entry.prover.kind=="server","Prover setting did not persist")
 	await tap("Proving")
-	await tap("On device")
+	await tap("Run local proof")
+	check("verified" in wallet.proof_status,"Missing proof check result")
+	await tap("On this phone")
 	await tap("Save proving")
-	await tap("Rescan")
+	check(engine.entry.prover.kind=="wasm","Prover setting did not return to the phone")
+	await tap("1 min")
+	check(engine.auto_lock==60 and wallet.prefs.auto_lock==60,"Auto-lock not set")
+	await tap("Biometric unlock")
+	check(not engine.bio_enabled,"Biometric unlock did not turn off")
+	await tap("Rescan wallet")
 	await tap("Back")
-	await tap("Remove wallet…")
-	await tap("Remove from this device")
+	await tap("Remove wallet from this phone")
+	await tap("Remove from this phone")
 	check("password" in wallet.feedback.text,"Removal guard missing")
 	await tap("Back")
 	await tap("Explore")
 	await tap("Find transaction")
 	await tap("Look up")
 	check("64-character" in wallet.feedback.text,"Invalid hash accepted")
-	wallet.body.find_children("*","LineEdit",true,false)[0].text="a".repeat(64)
+	fields()[0].text="a".repeat(64)
 	await tap("Look up")
 	check(wallet.chain_receipt.is_empty() and wallet.watching_hash=="a".repeat(64),"Unindexed receipt did not subscribe")
 	state.sync.tip=124
 	wallet._message(JSON.stringify({"type":"state","state":state}))
-	await process_frame
-	check(wallet.chain_receipt.block==123 and wallet.chain_receipt.execution=="SUCCESS","WebSocket head did not update receipt")
+	await settle()
+	check(wallet.chain_receipt.get("block")==123 and wallet.chain_receipt.get("execution")=="SUCCESS","WebSocket head did not update receipt")
 	if DisplayServer.get_name() != "headless":
 		await tap("Copy hash")
 		check(DisplayServer.clipboard_get()=="a".repeat(64),"Receipt hash copy failed")
 	await tap("Back")
 	await tap("Settings")
-	await tap("Lock wallet")
+	await tap("Lock now")
 	check(engine.calls.back().method=="lock","Lock request failed")
 	wallet._message(JSON.stringify({"type":"fatal","message":"Interrupted test startup"}))
 	await tap("Retry")

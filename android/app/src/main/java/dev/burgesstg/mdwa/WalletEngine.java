@@ -87,7 +87,7 @@ public final class WalletEngine extends GodotPlugin {
         lastViewport.set(widthDp, heightDp);
         lastInsets.set(left, top, right, bottom);
         emitSignal("message", "{\"type\":\"insets\",\"edges\":[" + left + "," + top + "," + right + "," + bottom
-            + "],\"widthDp\":" + widthDp + ",\"heightDp\":" + heightDp + "}");
+            + "],\"widthDp\":" + widthDp + ",\"heightDp\":" + heightDp + ",\"motion\":" + device().motion() + "}");
     }
 
     @UsedByGodot public void startEngine() {
@@ -230,6 +230,30 @@ public final class WalletEngine extends GodotPlugin {
         return true;
     }
 
+    private WalletDevice device;
+    private WalletDevice device() {
+        if (device == null) device = new WalletDevice((androidx.fragment.app.FragmentActivity) getActivity(), msg -> emitSignal("message", msg));
+        return device;
+    }
+    private View surface() { return getGodot().getRenderView() == null ? null : getGodot().getRenderView().getView(); }
+
+    @UsedByGodot public String biometricStatus(String network) { return getActivity() == null ? "{}" : device().status(network); }
+    @UsedByGodot public void enableBiometric(String network, String password) { runOnHostThread(() -> device().enable(network, password)); }
+    @UsedByGodot public void disableBiometric(String network) { runOnHostThread(() -> device().disable(network)); }
+    @UsedByGodot public void unlockWithBiometric(String network) { runOnHostThread(() -> device().unlock(network)); }
+    @UsedByGodot public void haptic(String kind) { runOnHostThread(() -> device().haptic(surface(), kind)); }
+    @UsedByGodot public void share(String text) { runOnHostThread(() -> device().share(text)); }
+    @UsedByGodot public void scanQr() { runOnHostThread(() -> device().scan()); }
+
+    // Seconds the worker stays unlocked after the app leaves the screen.
+    private volatile int autoLockSeconds;
+    private final Runnable lockNow = () -> {
+        if (active) return;
+        close();
+        emitSignal("message", "{\"type\":\"closed\"}");
+    };
+    @UsedByGodot public void setAutoLock(int seconds) { autoLockSeconds = Math.max(0, Math.min(seconds, 600)); }
+
     @UsedByGodot public void retryEngine() {
         runOnHostThread(() -> {
             if (!active) return;
@@ -252,13 +276,16 @@ public final class WalletEngine extends GodotPlugin {
         view.destroy();
     }
 
-    // Ending the worker drops all in-memory keys. The encrypted vault survives.
+    // Ending the worker drops all in-memory keys. With an auto-lock delay the
+    // worker keeps running in the background until the delay passes.
     @Override public void onMainPause() {
         active = false;
-        close();
-        emitSignal("message", "{\"type\":\"closed\"}");
+        main.removeCallbacks(lockNow);
+        if (autoLockSeconds <= 0) lockNow.run();
+        else main.postDelayed(lockNow, autoLockSeconds * 1000L);
     }
     @Override public void onMainResume() {
+        main.removeCallbacks(lockNow);
         active = true;
         if (started && engineView == null) open();
     }

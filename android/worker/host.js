@@ -39,7 +39,7 @@ window.addEventListener('message', ({ ports }) => {
     }
     prover.postMessage('end');
   };
-  worker.onerror = () => reply({ type: 'fatal', message: 'Wallet engine could not start. Update Android System WebView and reopen MDWA.' });
+  worker.onerror = () => reply({ type: 'fatal', message: 'Wallet engine could not start. Update Android System WebView and reopen Atom Wallet.' });
   port.onmessage = ({ data }) => {
     const { id, method, params } = JSON.parse(data);
     if (method === 'qr') {

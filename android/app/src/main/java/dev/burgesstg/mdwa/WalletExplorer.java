@@ -21,7 +21,10 @@ import org.json.JSONObject;
 /** Two public destinations in a separate view with no wallet message port. */
 final class WalletExplorer {
     private static final String LOCAL = "mdwa.local";
-    private static final String EXPLORER = "explorer.preview.midnight.network";
+    // Block explorers and faucets for the chains the wallet offers.
+    private static final java.util.Set<String> PUBLIC = new java.util.HashSet<>(java.util.Arrays.asList(
+        "explorer.preview.midnight.network", "explorer.preprod.midnight.network", "midnightexplorer.com",
+        "faucet.preview.midnight.network", "midnight-tmnight-preprod.nethermind.dev"));
     private final Activity activity;
     private final FrameLayout host;
     private final Consumer<String> notify;
@@ -36,7 +39,7 @@ final class WalletExplorer {
 
     private static boolean allowed(Uri uri) {
         return "https".equals(uri.getScheme()) && (uri.getPort() == -1 || uri.getPort() == 443)
-            && uri.getUserInfo() == null && (LOCAL.equals(uri.getHost()) || EXPLORER.equals(uri.getHost()));
+            && uri.getUserInfo() == null && (LOCAL.equals(uri.getHost()) || PUBLIC.contains(uri.getHost()));
     }
 
     private static WebResourceResponse missing() {
@@ -46,7 +49,7 @@ final class WalletExplorer {
 
     private void create() {
         page = new WebView(activity);
-        page.setBackgroundColor(Color.rgb(12, 23, 27));
+        page.setBackgroundColor(Color.rgb(11, 11, 20));
         page.getSettings().setAllowFileAccess(false);
         page.getSettings().setAllowContentAccess(false);
         page.getSettings().setJavaScriptEnabled(true);

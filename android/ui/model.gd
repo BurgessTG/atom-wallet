@@ -39,3 +39,23 @@ const HISTORY := [
 	{"kind":"send","status":"finalized","hash":"Sample payment 02","deltas":[{"type":NIGHT_TYPE,"amount":"-34250000","kind":"unshielded"}]},
 	{"kind":"dust","status":"confirmed","hash":"Sample registration 03","deltas":[]}
 ]
+
+const BIP39 = preload("res://bip39.gd")
+static var _word_set := {}
+
+static func wordlist() -> Array:
+	return BIP39.WORDS.duplicate()
+
+static func is_word(word: String) -> bool:
+	if _word_set.is_empty():
+		for w in BIP39.WORDS: _word_set[w] = true
+	return _word_set.has(word)
+
+# Up to `limit` list words that start with `prefix`, in list order.
+static func complete(prefix: String, limit := 4) -> Array:
+	var out := []
+	for w in BIP39.WORDS:
+		if w.begins_with(prefix):
+			out.append(w)
+			if out.size() >= limit: break
+	return out

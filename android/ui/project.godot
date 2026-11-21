@@ -1,11 +1,11 @@
 config_version=5
 [application]
-config/name="MDWA"
+config/name="Atom Wallet"
 run/main_scene="res://wallet.tscn"
 config/features=PackedStringArray("4.7", "Mobile")
 run/low_processor_mode=true
 boot_splash/show_image=false
-boot_splash/bg_color=Color(0.043, 0.047, 0.071, 1)
+boot_splash/bg_color=Color(0.043, 0.043, 0.078, 1)
 [display]
 window/size/viewport_width=412
 window/size/viewport_height=846

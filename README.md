@@ -1,4 +1,4 @@
-# mdwa
+# Atom Wallet (mdwa)
 
 This fork adds an Android client for Midnight Preview with Vulkan rendering and local Vulkan proof generation. [Build the Android APK and see the phone UI](android/README.md).
 

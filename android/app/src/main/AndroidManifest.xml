@@ -1,7 +1,8 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET"/>
+    <uses-permission android:name="android.permission.USE_BIOMETRIC"/>
     <uses-feature android:name="android.hardware.vulkan.version" android:version="0x00401000" android:required="true"/>
-    <application android:label="MDWA" android:icon="@drawable/wallet_icon" android:allowBackup="false"
+    <application android:label="Atom Wallet" android:icon="@drawable/wallet_icon" android:allowBackup="false"
         android:usesCleartextTraffic="false" android:theme="@android:style/Theme.Material.NoActionBar">
         <meta-data android:name="org.godotengine.plugin.v2.WalletEngine" android:value="dev.burgesstg.mdwa.WalletEngine"/>
         <activity android:name=".WalletActivity" android:exported="true" android:windowSoftInputMode="adjustResize"
@@ -11,5 +12,6 @@
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
         </activity>
+        <meta-data android:name="com.google.mlkit.vision.DEPENDENCIES" android:value="barcode_ui"/>
     </application>
 </manifest>

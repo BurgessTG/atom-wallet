@@ -1,10 +1,14 @@
-# MDWA for Android
+# Atom Wallet for Android
 
-This Android client uses Midnight Preview. Godot draws the controls, text, QR codes and artwork through its mobile Vulkan renderer. The APK bundles the Midnight SDK worker and a native Rust prover. One private WebMessagePort connects the UI to the SDK in Android System WebView. A second carries proof requests to the native library. Android keeps up to 64 MiB of HTTP cache for the public proving files. The SDK verifies circuit keys and public parameters against its release hashes when loading them. Private proof inputs stay in the app when local proving is selected.
+Atom Wallet is the Android client for Midnight Preview, Preprod and Mainnet; choose the chain in **Settings → Chain**. Preprod and Mainnet need a Blockfrost project ID. Godot draws the controls, text, QR codes and artwork through its mobile Vulkan renderer. The APK bundles the Midnight SDK worker and a native Rust prover. One private WebMessagePort connects the UI to the SDK in Android System WebView. A second carries proof requests to the native library. Android keeps up to 64 MiB of HTTP cache for the public proving files. The SDK verifies circuit keys and public parameters against its release hashes when loading them. Private proof inputs stay in the app when local proving is selected.
 
 <img src="../docs/screenshots/android-overview.png" alt="Android demo wallet showing assets, recent activity and wallet navigation" width="290">
 
 ## Use the wallet
+
+The atom in the top left opens nothing; the chain chip next to it switches chains, the eye hides balances and the gear opens Settings. Folded phones get bottom tabs (Wallet, Activity, Explore) and bottom sheets; unfolded screens of 600 dp or more get a side rail, two-column screens and centred dialogs. Send, DUST and contract confirmations are press-and-hold. **Settings** holds biometric unlock (the password is sealed by an Android Keystore key that needs a strong biometric and is invalidated by new enrolments), auto-lock, hidden balances, haptics and **Developer mode**, which reveals the test dApp, receipt lookup, the prover benchmark and per-proof GPU timings. **Scan** reads a QR address or `midnight:` link with the Google Play services code scanner.
+
+The paragraphs below predate the redesign; button names have changed as described above.
 
 Choose **Create wallet** to generate a recovery phrase, record it in order and set a password. **Restore wallet** opens an existing Preview wallet from its phrase and starts its shielded scan at the beginning of the chain. The worker encrypts the vault in the app’s IndexedDB storage. Leaving the app closes the worker and locks the wallet. If you leave during submission, check Activity after unlocking before retrying.
 
