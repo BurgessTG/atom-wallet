@@ -406,6 +406,7 @@ export async function openWallet({ network, endpoints, seed, snapshot = null, bi
   };
   const facade = await WalletFacade.init({
     configuration,
+    ...(globalThis.mdwaSubmissionService && { submissionService:globalThis.mdwaSubmissionService }),
     shielded: config => restoreOr(ShieldedWallet(config), 'shielded', () => freshShielded(ShieldedWallet(config), config)),
     unshielded: config => restoreOr(UnshieldedWallet(config), 'unshielded',
       () => UnshieldedWallet(config).startWithPublicKey(PublicKey.fromKeyStore(keystore))),
@@ -627,7 +628,9 @@ export function transfersOf(networkId, outputs) {
  *  proves and binds it. Returns the finalized handle. The facade reverts the
  *  recipe itself when proving or binding fails. */
 export async function sealRecipe(wallet, recipe, { onStage = () => {} } = {}) {
+  globalThis.mdwaProgress?.stage('Signing');
   const signed = await wallet.facade.signRecipe(recipe, wallet.keystore.signDataAsync);
+  globalThis.mdwaProgress?.stage('Proving');
   onStage('proving');
   return wallet.facade.finalizeRecipe(signed);
 }
@@ -643,9 +646,15 @@ export function recipeTransactions(recipe) {
 /** Signs (unshielded inputs), proves, binds and submits a recipe.
  *  `onStage` hears 'proving' and 'submitting'. Returns the transaction id. */
 export async function completeRecipe(wallet, recipe, { sign = true, onStage = () => {} } = {}) {
+  if (sign) globalThis.mdwaProgress?.stage('Signing');
   const signed = sign ? await wallet.facade.signRecipe(recipe, wallet.keystore.signDataAsync) : recipe;
   onStage('proving');
+  globalThis.mdwaProgress?.stage('Proving');
   const finalized = await wallet.facade.finalizeRecipe(signed);
+  if (globalThis.mdwaProgress) {
+    globalThis.mdwaProgress.bind(ledgerTransaction(finalized));
+    globalThis.mdwaProgress.stage('Submitting');
+  }
   onStage('submitting');
   return wallet.facade.submitTransaction(finalized);
 }
@@ -767,6 +776,7 @@ export function historyItem(entry, { lifecycle = [], mine = null, meta = null })
     kind: meta?.kind ?? derived,
     ...(meta?.kind === 'dust' && meta.action ? { action: meta.action } : {}),
     ...dappFields(meta),
+    ...(meta?.timeline && { timeline:meta.timeline }),
     // An offer's balance change is what the wallet noted when it made it:
     // the SDK records nothing of a transaction that never reached a block.
     deltas: offer && !deltas.length && meta.deltas ? meta.deltas : deltas,

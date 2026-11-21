@@ -1,0 +1,16 @@
+pragma language_version 0.28;
+import CompactStandardLibrary;
+
+export ledger mintCount: Counter;
+
+// Permissionless test tokens for the Preview wallet. Each deployment has its own token types.
+export circuit mintShielded(amount: Uint<64>, nonce: Bytes<32>): [] {
+  mintShieldedToken(pad(32, "mdwa-preview-shielded"), disclose(amount), disclose(nonce),
+    left<ZswapCoinPublicKey, ContractAddress>(ownPublicKey()));
+  mintCount.increment(1);
+}
+export circuit mintUnshielded(amount: Uint<64>, recipient: UserAddress): [] {
+  mintUnshieldedToken(pad(32, "mdwa-preview-public"), disclose(amount),
+    right<ContractAddress, UserAddress>(disclose(recipient)));
+  mintCount.increment(1);
+}

@@ -34,6 +34,7 @@ public final class WalletEngine extends GodotPlugin {
     private static final Uri ORIGIN = Uri.parse("https://appassets.androidplatform.net");
     private static final String PAGE = ORIGIN + "/index.html";
     private WebView engineView;
+    private volatile WalletExplorer explorer;
     private WebMessagePort requests;
     private NativeProver prover;
     private boolean active = true;
@@ -49,9 +50,50 @@ public final class WalletEngine extends GodotPlugin {
         return Collections.singleton(new SignalInfo("message", String.class));
     }
 
+    private View observedWindow;
+    private final android.graphics.Point lastViewport = new android.graphics.Point();
+    private final android.graphics.Rect lastInsets = new android.graphics.Rect(-1, -1, -1, -1);
+    private final android.view.ViewTreeObserver.OnGlobalLayoutListener layoutListener = this::publishInsets;
+
+    private void observeWindow() {
+        Activity activity = getActivity();
+        if (activity == null) return;
+        if (observedWindow == null) {
+            observedWindow = activity.getWindow().getDecorView();
+            observedWindow.getViewTreeObserver().addOnGlobalLayoutListener(layoutListener);
+        }
+        publishInsets();
+    }
+
+    private void publishInsets() {
+        if (observedWindow == null || getGodot().getRenderView() == null) return;
+        View surface = getGodot().getRenderView().getView();
+        androidx.core.view.WindowInsetsCompat root = androidx.core.view.ViewCompat.getRootWindowInsets(observedWindow);
+        if (root == null || surface == null || surface.getWidth() == 0) return;
+        androidx.core.graphics.Insets edges = root.getInsets(androidx.core.view.WindowInsetsCompat.Type.systemBars()
+            | androidx.core.view.WindowInsetsCompat.Type.displayCutout() | androidx.core.view.WindowInsetsCompat.Type.ime());
+        int[] window = new int[2], view = new int[2];
+        observedWindow.getLocationOnScreen(window);
+        surface.getLocationOnScreen(view);
+        int left = Math.max(0, window[0] + edges.left - view[0]);
+        int top = Math.max(0, window[1] + edges.top - view[1]);
+        int right = Math.max(0, view[0] + surface.getWidth() - (window[0] + observedWindow.getWidth() - edges.right));
+        int bottom = Math.max(0, view[1] + surface.getHeight() - (window[1] + observedWindow.getHeight() - edges.bottom));
+        float density = surface.getResources().getDisplayMetrics().density;
+        int widthDp = Math.round(surface.getWidth() / density);
+        int heightDp = Math.round(surface.getHeight() / density);
+        if (lastViewport.x == widthDp && lastViewport.y == heightDp && lastInsets.left == left
+                && lastInsets.top == top && lastInsets.right == right && lastInsets.bottom == bottom) return;
+        lastViewport.set(widthDp, heightDp);
+        lastInsets.set(left, top, right, bottom);
+        emitSignal("message", "{\"type\":\"insets\",\"edges\":[" + left + "," + top + "," + right + "," + bottom
+            + "],\"widthDp\":" + widthDp + ",\"heightDp\":" + heightDp + "}");
+    }
+
     @UsedByGodot public void startEngine() {
         runOnHostThread(() -> {
             started = true;
+            observeWindow();
             if (active && engineView == null) open();
         });
     }
@@ -128,7 +170,8 @@ public final class WalletEngine extends GodotPlugin {
                     try {
                         InputStream file = activity.getAssets().open("engine" + path);
                         String mime = path.endsWith(".wasm") ? "application/wasm"
-                            : (path.endsWith(".js") || path.endsWith(".mjs")) ? "application/javascript" : "text/html";
+                            : (path.endsWith(".js") || path.endsWith(".mjs")) ? "application/javascript" : path.endsWith(".json") ? "application/json"
+                            : path.endsWith(".html") ? "text/html" : "application/octet-stream";
                         return new WebResourceResponse(mime, null, file);
                     } catch (IOException ignored) { /* Return a local 404. */ }
                 }
@@ -171,6 +214,22 @@ public final class WalletEngine extends GodotPlugin {
         view.loadUrl(PAGE);
     }
 
+    @UsedByGodot public void showExplorer(String url, int x, int y, int width, int height) {
+        runOnHostThread(() -> {
+            if (!active || getActivity() == null || getGodot().getRenderView() == null) return;
+            if (explorer == null) explorer = new WalletExplorer(getActivity(), msg -> emitSignal("message", msg));
+            explorer.show(url, getGodot().getRenderView().getView(), x, y, width, height);
+        });
+    }
+    @UsedByGodot public void hideExplorer() { runOnHostThread(() -> { if (explorer != null) explorer.hide(); }); }
+    @UsedByGodot public void closeExplorer() { runOnHostThread(() -> { if (explorer != null) explorer.close(); }); }
+    @UsedByGodot public void reloadExplorer() { runOnHostThread(() -> { if (explorer != null) explorer.reload(); }); }
+    @UsedByGodot public boolean explorerBack() {
+        if (explorer == null || !explorer.canGoBack()) return false;
+        runOnHostThread(() -> { if (explorer != null) explorer.back(); });
+        return true;
+    }
+
     @UsedByGodot public void retryEngine() {
         runOnHostThread(() -> {
             if (!active) return;
@@ -180,6 +239,7 @@ public final class WalletEngine extends GodotPlugin {
     }
 
     private void close() {
+        if (explorer != null) explorer.close();
         main.removeCallbacks(bootTimeout);
         if (requests != null) requests.close();
         requests = null;
@@ -202,5 +262,10 @@ public final class WalletEngine extends GodotPlugin {
         active = true;
         if (started && engineView == null) open();
     }
-    @Override public void onMainDestroy() { close(); }
+    @Override public void onMainDestroy() {
+        if (observedWindow != null && observedWindow.getViewTreeObserver().isAlive())
+            observedWindow.getViewTreeObserver().removeOnGlobalLayoutListener(layoutListener);
+        observedWindow = null;
+        close();
+    }
 }

@@ -14,21 +14,25 @@ static func units(raw: String, decimals: int) -> String:
 	var fraction := digits.substr(split).rstrip("0")
 	return ("−" if neg else "") + grouped + ("" if fraction.is_empty() else "." + fraction)
 
-static func stars(input: String) -> String:
+static func atomic_amount(input: String, decimals: int) -> String:
 	var amount := input.strip_edges()
 	var parts := amount.split(".", true)
 	if parts.size() > 2 or parts[0].is_empty(): return ""
 	for i in amount.length():
 		if amount[i] != "." and (amount.unicode_at(i) < 48 or amount.unicode_at(i) > 57): return ""
 	var fraction := "" if parts.size() == 1 else parts[1]
-	if fraction.length() > 6: return ""
-	return (parts[0] + fraction.rpad(6, "0")).lstrip("0")
+	if fraction.length() > decimals: return ""
+	return (parts[0] + fraction.rpad(decimals, "0")).lstrip("0")
+
+static func exceeds(atomic: String, available: String) -> bool:
+	return atomic.length() > available.length() or (atomic.length() == available.length() and atomic > available)
 
 const NIGHT_TYPE := "0000000000000000000000000000000000000000000000000000000000000000"
+const DEMO_TYPE := "d1b3f32e66ba000000000000000000000000000000000000000000000000fe91"
 const SAMPLE := {
 	"night": {"available":"2840750000","pending":"0"},
 	"dust": {"balance":"42600000000000000","cap":"60000000000000000","registeredNight":"1200000000","unregisteredNight":"1640750000"},
-	"unshielded": [{"type": NIGHT_TYPE,"amount":"2840750000"}], "shielded":[]
+	"unshielded": [{"type": NIGHT_TYPE,"amount":"2840750000"}], "shielded":[{"type": DEMO_TYPE,"amount":"125"}]
 }
 const HISTORY := [
 	{"kind":"receive","status":"finalized","hash":"Sample receipt 01","deltas":[{"type":NIGHT_TYPE,"amount":"125000000","kind":"unshielded"}]},

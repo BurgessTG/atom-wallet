@@ -35,7 +35,7 @@ const idleSync = () => ({
   start: null, refreshing: false,
 });
 const state = {
-  network: DEFAULT_NETWORK, networks: [], hasWallet: false, locked: false, addresses: null, birthday: null, birthdayNote: null,
+  viewRevision: 0, network: DEFAULT_NETWORK, networks: [], hasWallet: false, locked: false, addresses: null, birthday: null, birthdayNote: null,
   sync: idleSync(), busy: null, waiting: [], prover: { kind: 'wasm', url: '' },
 };
 let store = db.forNetwork(DEFAULT_NETWORK);   // the selected network's database
@@ -44,6 +44,8 @@ let session = null;                            // the running SDK wallet of the 
 let retryTimer = null, retryDelay = 2000;
 const previews = new Map();                    // id -> { kind, network, recipe, timer, ... }
 let nextPreview = 0;
+let transactionRevision = 0;
+let releasingPreviews = 0;
 
 let publishTimer = null, lastPublish = 0;
 function publish() {
@@ -103,8 +105,13 @@ async function noteTransaction(network, ids, note) {
   const keys = unlocked.get(network);
   if (!keys) return;
   const meta = (await vault.decryptJson(keys.key, await db.forNetwork(network).get('txmeta'))) ?? {};
-  for (const id of ids) meta[id] = { ...note, at: Date.now() };
+  const timeline = globalThis.mdwaProgress?.recorded(ids);
+  for (const id of ids) {
+    const recorded = timeline ?? meta[id]?.timeline;
+    meta[id] = { ...note, at:Date.now(), ...(recorded && { timeline:recorded }) };
+  }
   await writeRecord(network, 'txmeta', meta);
+  if (network === store.network) { if (session) session.recentHistory = null; state.viewRevision++; publish(); }
 }
 const txMeta = async () => (await readRecord('txmeta')) ?? {};
 
@@ -122,34 +129,34 @@ async function startSession() {
   try {
     const endpoints = await endpointsFor(network);
     const urls = connectionUrls(network, endpoints);   // throws the Blockfrost project id message
-    // The chain tip, read from the indexer from the start: the SDK keeps
-    // trying an endpoint it cannot reach without saying so, so this is also
-    // how the user learns that the indexer does not answer.
-    const tip = async () => {
-      const height = await midnight.indexerTip(urls.indexerHttp);
-      if (session !== run) return;
-      if (height !== null) {
-        state.sync.tip = height;
-        if (state.sync.status === 'connecting') state.sync.error = null;
-      } else if (state.sync.status === 'connecting') {
-        state.sync.error = `The indexer at ${endpoints.indexerHttp} does not answer: check the endpoints in Settings`;
-      }
-      publish();
-    };
-    tip();
-    run.timers.push(setInterval(tip, 30000));
-    // The SDK retries a query the indexer does not offer forever, without
-    // saying so: an indexer that lacks one of the wallet's queries (an older
-    // or third-party one) is named here instead of syncing without end.
-    const missing = await birthdays.missingQueries(urls.indexerHttp);
-    if (missing?.length) {
-      throw Object.assign(new Error(`The indexer at ${endpoints.indexerHttp} does not offer ${missing.join(', ')}, which this wallet's sync needs`), { permanent: true });
-    }
     const keys = unlocked.get(network);
-    const stored = await store.get('snapshot');
-    let resume = null;
-    if (stored && stored.indexerHttp === endpoints.indexerHttp) resume = await vault.decryptJson(keys.key, stored.box);
-    const record = await store.get('wallet');
+    const saved = async () => {
+      const stored = await store.get('snapshot');
+      if (stored?.indexerHttp !== endpoints.indexerHttp) return null;
+      const restored = await vault.decryptJson(keys.key, stored.box);
+      if (restored?.overview && session === run && !run.stopped) {
+        run.cachedOverview = { cachedAt:stored.savedAt, ...restored.overview };
+        state.viewRevision++;
+        publish();
+      }
+      return restored;
+    };
+    if (globalThis.mdwaNativeProof) watchFinalizedHeads(run, urls.node);
+    else {
+      const tip = async () => {
+        const height = await midnight.indexerTip(urls.indexerHttp);
+        if (session !== run) return;
+        if (height != null) state.sync.tip = height;
+        publish();
+      };
+      tip();
+      run.timers.push(setInterval(tip, 30000));
+    }
+    const [missing, resume, record] = await Promise.all([
+      birthdays.missingQueries(urls.indexerHttp), saved(), store.get('wallet'),
+    ]);
+    if (run.stopped) return;
+    if (missing?.length) throw Object.assign(new Error('Missing wallet queries on the indexer: ' + missing.join(', ')), { permanent:true });
     run.wallet = await midnight.openWallet({
       network, endpoints, seed: vault.fromHex(keys.seedHex), snapshot: resume, birthday: record?.birthday ?? null,
     });
@@ -166,10 +173,43 @@ async function startSession() {
   } catch (error) { sessionFailed(run, error); }
 }
 
+function watchFinalizedHeads(run, url) {
+  let delay = 1000;
+  const connect = () => {
+    if (run.stopped) return;
+    const socket = run.headSocket = new WebSocket(url);
+    socket.onopen = () => socket.send(JSON.stringify({ jsonrpc:'2.0', id:1, method:'chain_subscribeFinalizedHeads', params:[] }));
+    socket.onmessage = ({ data }) => {
+      if (session !== run || run.stopped) return;
+      let msg;
+      try { msg = JSON.parse(data); } catch { return; }
+      if (msg.error) { socket.close(); return; }
+      const number = msg.params?.result?.number;
+      if (!/^0x[0-9a-f]+$/i.test(number ?? '')) return;
+      delay = 1000;
+      const height = Number.parseInt(number, 16);
+      if (height === state.sync.tip && state.sync.headsConnected) return;
+      state.sync.tip = height;
+      state.sync.headsConnected = true;
+      state.viewRevision++;
+      publish();
+    };
+    socket.onclose = () => {
+      if (run.stopped || session !== run) return;
+      state.sync.headsConnected = false;
+      publish();
+      run.headRetry = setTimeout(connect, delay);
+      delay = Math.min(30000, delay * 2);
+    };
+  };
+  connect();
+}
+
 function onState(run, s) {
   if (session !== run) return;
   const wasSynced = run.latest?.isSynced;
   run.latest = s;
+  state.viewRevision++;
   const sync = midnight.syncOf(s);
   if (s.isSynced) run.everSynced = true;
   // The DUST wallet re-reads its state in a pass every 30 seconds (see
@@ -249,11 +289,18 @@ function sessionFailed(run, error) {
 
 async function saveSnapshot(run) {
   if (!run.wallet || run.saving || !unlocked.has(run.network)) return run.saving;
+  // A saved reservation must belong to a submitted transaction. Drafts disappear on process death.
+  const draftsOpen = () => state.busy || releasingPreviews || [...previews.values()].some(p => p.network === run.network);
+  if (draftsOpen()) return;
+  const revision = transactionRevision;
   run.saving = (async () => {
     try {
       const keys = unlocked.get(run.network);
       const snap = await run.wallet.serialize();
-      await db.forNetwork(run.network).put('snapshot', { indexerHttp: run.indexerHttp, savedAt: snap.savedAt, box: await vault.encryptJson(keys.key, snap) });
+      if (run.latest?.isSynced) run.cachedOverview = { ...midnight.overviewOf(run.latest, run.wallet.networkId, new Date(), run), cachedAt:snap.savedAt };
+      if (run.cachedOverview) snap.overview = run.cachedOverview;
+      const box = await vault.encryptJson(keys.key, snap);
+      if (revision === transactionRevision && !draftsOpen()) await db.forNetwork(run.network).put('snapshot', { indexerHttp:run.indexerHttp, savedAt:snap.savedAt, box });
     } catch { /* a failed save only costs a longer sync next time */ } finally { run.saving = null; }
   })();
   return run.saving;
@@ -261,6 +308,10 @@ async function saveSnapshot(run) {
 
 async function stopRun(run, { save = true } = {}) {
   run.stopped = true;
+  clearTimeout(run.headRetry);
+  run.headSocket?.close();
+  for (const feed of run.contractFeeds?.values() ?? []) feed.subscription?.unsubscribe();
+  await run.contractData?.dispose().catch(() => {});
   for (const t of run.timers) clearInterval(t);
   run.subscription?.unsubscribe();
   if (!run.wallet) return;
@@ -305,7 +356,7 @@ async function synced() {
 // ------------------------------------------------------------- previews ---
 function keepPreview(entry) {
   const id = `${++nextPreview}`;
-  entry.timer = setTimeout(() => dropPreview(id), PREVIEW_LIFETIME_MS);
+  entry.timer = setTimeout(() => dropPreview(id).catch(() => {}), PREVIEW_LIFETIME_MS);
   previews.set(id, entry);
   return id;
 }
@@ -313,9 +364,12 @@ async function dropPreview(id) {
   const p = previews.get(id);
   if (!p) return;
   previews.delete(id);
+  globalThis.mdwaProgress?.discard(id);
   clearTimeout(p.timer);
   // Reverting gives the coins the recipe booked back to the wallet.
-  if (p.recipe && p.wallet) await p.wallet.facade.revert(p.recipe, 'cancelled').catch(() => {});
+  releasingPreviews++;
+  try { if (p.recipe && p.wallet) await p.wallet.facade.revert(p.recipe, 'cancelled'); }
+  finally { releasingPreviews--; transactionRevision++; }
 }
 function takePreview(id, kind) {
   const p = previews.get(String(id));
@@ -352,7 +406,7 @@ const sentOf = outputs => outputs
   .map(o => ({ kind: o.kind, type: o.type, amount: o.amount }));
 
 async function withBusy(kind, stage, fn, { wait = false, ticket = null } = {}) {
-  const take = () => { state.busy = { kind, stage, startedAt: Date.now(), ...(ticket ? { ticket } : {}) }; };
+  const take = () => { transactionRevision++; state.busy = { kind, stage, startedAt: Date.now(), ...(ticket ? { ticket } : {}) }; };
   if (!state.busy) take();
   else if (!wait) throw new Error('The wallet is busy with another transaction');
   else {
@@ -538,6 +592,13 @@ async function saveSettings({ network, endpoints }) {
 }
 
 // --------------------------------------------------------------- UI calls ---
+function contractRecord(kind) {
+  if (!globalThis.mdwaPreviewContracts || store.network !== 'preview') throw Error('Contracts require the Android Preview wallet');
+  if (kind === 'token') return 'previewToken';
+  if (kind === 'counter') return 'previewCounter';
+  throw Error('Unknown contract');
+}
+
 const ui = {
   ...(globalThis.mdwaNativeProof ? { checkAndroidProver: midnight.checkAndroidProver } : {}),
   state: async () => snapshot(),
@@ -553,13 +614,110 @@ const ui = {
       ? { shielded: session.latest.shielded.balances, unshielded: session.latest.unshielded.balances } : null),
   }),
   overview: async () => {
+    if (!state.locked && session?.cachedOverview && !session.everSynced) return { ...session.cachedOverview, birthday:state.birthday };
     const { run, wallet: w, s } = await live();
     return { ...midnight.overviewOf(s, w.networkId, new Date(), run), birthday: state.birthday };
   },
+  previewTokenContract: async ({ kind = 'token' } = {}) => {
+    if (state.locked) throw lockedError();
+    const record = await readRecord(contractRecord(kind));
+    if (!record?.address) return { address:null };
+    const run = session;
+    let value = null;
+    if (run?.wallet) {
+      const urls = connectionUrls(store.network, await endpointsFor(store.network));
+      if (run === session && !run.stopped) {
+        value = self.mdwaPreviewContracts.watchContract(run, urls, kind, record.address, () => { state.viewRevision++; publish(); });
+      }
+    }
+    return { address:record.address, last:record.last, pending:!!record.pending, value, types:kind === 'token' ? self.mdwaPreviewContracts.tokenTypes(record.address) : null };
+  },
+  prepareTokenAction: async ({ action, amount = '1', kind = 'token' }) => withBusy('contract', 'preparing', async () => {
+    const { run, wallet:w, s } = await synced();
+    const recordName = contractRecord(kind);
+    const record = await readRecord(recordName);
+    if (record?.pending) throw Error('Check the previous submission first');
+    if (action === 'deploy' && record?.address) throw Error('This wallet already has a Preview token contract');
+    const urls = connectionUrls(store.network, await endpointsFor(store.network));
+    const built = await self.mdwaPreviewContracts.preparePreviewContract({ run, kind, wallet:w, state:s, urls, action, amount:String(amount), address:record?.address }).catch(error => {
+      if (error?.cause?.message) throw Error(error.message + ' (' + error.cause.message + ')');
+      throw error;
+    });
+    try {
+      const fee = midnight.recipeTransactions(built.recipe).reduce((sum, tx) => sum + BigInt(midnight.describeLedgerTransaction(tx, s).fee), 0n).toString();
+      const shown = { contractKind:kind, action, amount:String(amount), address:built.address, tokenType:built.tokenType, fee };
+      const id = keepPreview({ kind:'contract', network:store.network, wallet:w, recordName, ...built, ...shown });
+      return { id, ...shown };
+    } catch (error) { await w.facade.revert(built.recipe, 'cancelled'); throw error; }
+  }),
+  submitTokenAction: async ({ id }) => withBusy('contract', 'signing', async stage => {
+    const p = takePreview(id, 'contract');
+    const previous = await readRecord(p.recordName);
+    if (previous?.pending || (p.action === 'deploy' && previous?.address)) {
+      await p.wallet.facade.revert(p.recipe, 'cancelled');
+      throw Error('Check the existing contract action first');
+    }
+    const finalized = await midnight.sealRecipe(p.wallet, p.recipe, { onStage:stage });
+    const ledgerTx = midnight.ledgerTransaction(finalized);
+    globalThis.mdwaProgress?.bind(ledgerTx);
+    const ids = ledgerTx.identifiers();
+    const last = { action:p.action, id:ids[0], hash:midnight.ledgerTransaction(finalized).transactionHash(), amount:p.amount, tokenType:p.tokenType };
+    const record = { ...previous, address:p.address, last };
+    if (p.signingKey) record.signingKey = p.signingKey;
+    record.pending = { signed:vault.toHex(finalized.serialize()), previous:previous?.last, fee:p.fee, created:Date.now() };
+    await writeRecord(p.network, p.recordName, record);
+    stage('submitting');
+    globalThis.mdwaProgress?.stage('Submitting');
+    const txId = await p.wallet.facade.submitTransaction(finalized);
+    delete record.pending;
+    await writeRecord(p.network, p.recordName, record);
+    await noteTransaction(p.network, [...ids, txId], { kind:'dapp', action:p.action, fee:p.fee, origin:null });
+    return { txId, address:p.address, tokenType:p.tokenType };
+  }),
+  recoverTokenAction: async ({ kind = 'token' }) => withBusy('contract', 'checking', async stage => {
+    const { wallet:w } = await synced();
+    const name = contractRecord(kind);
+    const record = await readRecord(name);
+    if (!record?.pending) return {};
+    const network = store.network;
+    const urls = connectionUrls(network, await endpointsFor(network));
+    const response = await fetch(urls.indexerHttp, {
+      method:'POST', headers:{ 'content-type':'application/json' }, signal:AbortSignal.timeout(12000),
+      body:JSON.stringify({ query:'query($h: HexEncoded!){ block { timestamp } transactions(offset:{hash:$h}) { hash ... on RegularTransaction { transactionResult { status } } } }', variables:{ h:record.last.hash } }),
+    });
+    const body = await response.json();
+    if (!response.ok || body.errors || !body.data?.block) throw Error('The indexer could not check this submission');
+    const match = body.data.transactions.find(tx => tx.hash === record.last.hash);
+    const timestamp = Number(body.data.block.timestamp);
+    if (match && !['SUCCESS','FAILURE'].includes(match.transactionResult?.status)) {
+      throw Error('Check the contract result in Activity before starting another action');
+    }
+    const rejected = match?.transactionResult?.status === 'FAILURE';
+    if (rejected || (!match && timestamp > record.pending.created + 35 * 60 * 1000)) {
+      if (record.last.action === 'deploy') await store.delete(name);
+      else {
+        record.last = record.pending.previous;
+        delete record.pending;
+        await writeRecord(network, name, record);
+      }
+      return { message:'This contract action did not complete. You can review a new one.' };
+    }
+    if (!match) {
+      stage('submitting');
+      const signed = w.facade.adoptTransaction(vault.fromHex(record.pending.signed), 'Finalized');
+      await w.facade.submitTransaction(signed);
+    }
+    const fee = record.pending.fee;
+    delete record.pending;
+    await writeRecord(network, name, record);
+    await noteTransaction(network, [record.last.hash, record.last.id], { kind:'dapp', action:record.last.action, fee, origin:null });
+    return { message:'Submission located. Check Activity for confirmation.' };
+  }),
   checkAddress: async ({ address }) => midnight.checkAddress(net().networkId, address),
   previewSend: async ({ outputs }) => {
     const { wallet: w } = await synced();
     return withBusy('send', 'balancing', async () => {
+      globalThis.mdwaProgress?.stage('Balancing');
       const built = await midnight.buildTransfer(w, outputs);
       const id = keepPreview({ kind: 'send', network: store.network, wallet: w, recipe: built.recipe, outputs: built.outputs, fee: built.fee });
       return { id, outputs: built.outputs, fee: built.fee, ttl: built.ttl };
@@ -577,6 +735,7 @@ const ui = {
   dustPreview: async ({ action }) => {
     const { wallet: w } = await synced();
     return withBusy('dust', 'balancing', async () => {
+      globalThis.mdwaProgress?.stage('Balancing');
       const built = await midnight.buildDustAction(w, action);
       const id = keepPreview({ kind: 'dust', network: store.network, wallet: w, recipe: built.recipe, action, fee: built.fee });
       const { recipe, ...shown } = built;
@@ -599,10 +758,42 @@ const ui = {
       return { txId };
     });
   },
+  chainReceipt: async ({ hash }) => {
+    if (!/^[a-f0-9]{64}$/i.test(hash)) throw Error('Enter a 64-character transaction hash');
+    const urls = connectionUrls(store.network, await endpointsFor(store.network));
+    const query = `query Receipt($hash: HexEncoded!) { transactions(offset:{hash:$hash}) {
+      hash block { height timestamp } ... on RegularTransaction { fee transactionResult { status } }
+    } }`;
+    const response = await fetch(urls.indexerHttp, { method:'POST', headers:{ 'content-type':'application/json' },
+      body:JSON.stringify({ query, variables:{ hash:hash.toLowerCase() } }), signal:AbortSignal.timeout(12000) });
+    if (!response.ok) throw Error('Indexer unavailable. Try again.');
+    const { data, errors } = await response.json();
+    if (errors?.length) throw Error('Indexer could not read this receipt');
+    const tx = data.transactions.find(item => item.hash.toLowerCase() === hash.toLowerCase());
+    if (!tx) return null;
+    return { hash:tx.hash, block:tx.block.height, time:tx.block.timestamp, fee:tx.fee, execution:tx.transactionResult?.status ?? 'Included' };
+  },
+  walletHome: async () => {
+    const overview = await ui.overview();
+    const run = session;
+    if (!run?.latest || !run.everSynced) return { overview, recent:[] };
+    const { latest:s } = run;
+    const tip = state.sync.tip;
+    const prior = run.recentHistory;
+    if (prior && prior.tip === tip && prior.lifecycle === s.lifecycle) return { overview, recent:prior.items };
+    const items = (await midnight.historyItems(run.wallet, s, await txMeta())).slice(0, 3);
+    run.recentHistory = { tip, lifecycle:s.lifecycle, items };
+    return { overview, recent:items };
+  },
   history: async ({ offset = 0, limit = 50 } = {}) => {
     const { wallet: w, s } = await live();
     const items = await midnight.historyItems(w, s, await txMeta());
     return { total: items.length, items: items.slice(Number(offset), Number(offset) + Number(limit)) };
+  },
+  activityItem: async ({ hash }) => {
+    const { wallet:w, s } = await live();
+    const items = await midnight.historyItems(w, s, await txMeta());
+    return items.find(item => item.hash === hash || item.identifiers.includes(hash)) ?? null;
   },
   txDetail: async ({ hash }) => {
     const { wallet: w, s } = await live();
@@ -652,7 +843,9 @@ self.onmessage = async ({ data }) => {
     await ready;
     const table = tables[kind];
     if (!table || !Object.hasOwn(table, method)) throw new Error(`Unknown method ${method}`);
-    const result = await table[method](params ?? {});
+    const execute = () => table[method](params ?? {});
+    const result = kind === 'ui' && self.mdwaProgress
+      ? await self.mdwaProgress.run(method, params ?? {}, id, execute) : await execute();
     self.postMessage({ id, result: result === undefined ? null : result });
   } catch (error) {
     self.postMessage({ id, error: { message: String(error?.message ?? error), code: error?.code ?? null, locked: !!error?.locked } });

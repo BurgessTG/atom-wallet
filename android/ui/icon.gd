@@ -12,6 +12,17 @@ func _draw() -> void:
 				var poly := PackedVector2Array()
 				for i in range(0, v.size(), 2): poly.append(Vector2(v[i], v[i+1]))
 				draw_colored_polygon(poly, ink)
+		"plane": line([2,10,22,3,16,21,11,15,18,7,9,13,2,10])
+		"qr":
+			for pos in [Vector2(3,3),Vector2(14,3),Vector2(3,14)]:
+				draw_rect(Rect2(pos,Vector2(7,7)),ink,false,1.8,true)
+				draw_rect(Rect2(pos+Vector2(2.5,2.5),Vector2(2,2)),ink)
+			line([14,14,17,14,17,18,21,18,21,21]); line([14,18,14,21,17,21]); line([20,14,21,14])
+		"explore":
+			draw_circle(Vector2(12,12),9,ink,false,1.7,true)
+			line([16.5,7.5,13.5,13.5,7.5,16.5,10.5,10.5,16.5,7.5])
+		"close": line([6,6,18,18]); line([18,6,6,18])
+		"refresh": draw_arc(Vector2(12,12),8,-.6,4.5,32,ink,1.8,true); line([13,3,19,4,18,10])
 		"send", "receive":
 			if symbol == "send":
 				line([5,19,19,5]); line([8,5,19,5,19,16])
@@ -37,6 +48,8 @@ func _draw() -> void:
 		"next": line([9,6,15,12,9,18])
 		"copy":
 			line([8,8,20,8,20,21,8,21,8,8]); line([5,16,3,16,3,3,15,3,15,5])
+		"contracts":
+			line([5,3,15,3,19,7,19,21,5,21,5,3]); line([14,3,14,8,19,8]); line([10,11,8,14,10,17]); line([14,11,16,14,14,17])
 		"shield": line([12,2,20,5,20,12,17,17,12,21,7,17,4,12,4,5,12,2])
 		"check": line([4,12,9,17,20,6])
 

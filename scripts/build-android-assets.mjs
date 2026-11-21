@@ -9,16 +9,21 @@ const root = fileURLToPath(new URL('../', import.meta.url));
 const ui = path.join(root, 'android/ui');
 const assets = path.join(root, 'android/app/build/generated/walletAssets');
 const engine = path.join(assets, 'engine');
-const extension = path.join(root, 'build/extension');
+const extension = path.join(root, 'build/android-worker');
 function run(bin, args) {
   const result = spawnSync(bin, args, { cwd: root, stdio: 'inherit' });
   if (result.error) throw result.error;
   if (result.status !== 0) throw new Error(`${bin} exited with ${result.status}`);
 }
 
-run(process.execPath, ['scripts/build-extension.mjs']);
+run(process.execPath, ['scripts/build-extension.mjs', '--android']);
 rmSync(assets, { recursive: true, force: true });
 mkdirSync(engine, { recursive: true });
+for (const [name, source] of [['token', 'android/contracts/managed'], ['counter', 'dapp/contract/managed']]) {
+  for (const dir of ['compiler', 'keys', 'zkir']) {
+    cpSync(path.join(root, source, dir), path.join(engine, name + '-contract', dir), { recursive:true });
+  }
+}
 mkdirSync(path.join(assets, 'licenses'));
 cpSync(path.join(ui, 'Inter-LICENSE.txt'), path.join(assets, 'licenses/Inter.txt'));
 for (const file of ['engine-worker.js', 'engine-worker.js.LEGAL.txt', 'LICENSE', 'wasm']) {

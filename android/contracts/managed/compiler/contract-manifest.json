@@ -1,0 +1,79 @@
+{
+  "manifest-version": "1",
+  "compiler-version": "0.36.1",
+  "compiler-commit": "7fa3a117c5e7efe9d2c51da04263e5f0b3509144",
+  "language-version": "0.28.0",
+  "runtime-version": "0.21.0",
+  "compiler": {
+    "type": "directory",
+    "contract-info.json": {
+      "type": "file",
+      "size": 1591,
+      "hash": "bd8d8ba6337146c1ee5237bc91312f5c42e537e06b7e7d945b6b2b7663fe9fd9"
+    }
+  },
+  "contract": {
+    "type": "directory",
+    "index.d.ts": {
+      "type": "file",
+      "size": 2175,
+      "hash": "2b8132d86c2957a5d8e7d208757f3b483805131af4e0c35c63cbd8433be3f943"
+    },
+    "index.js": {
+      "type": "file",
+      "size": 42264,
+      "hash": "0ee35c21f91d4012db00ebc1d5f0e1c2c8ba76c5c6551d30f51f6b21f4a7d5ca"
+    },
+    "index.js.map": {
+      "type": "file",
+      "size": 1930,
+      "hash": "ea9fed9e79f1036e7a6e24d1072894b6d66d8f2d45860f5df32a5e1217d08b7c"
+    }
+  },
+  "zkir": {
+    "type": "directory",
+    "mintShielded.bzkir": {
+      "type": "file",
+      "size": 1283,
+      "hash": "9157773864c0a7fa63fabf23b36f04a60e27b1dee5bb49453c72a5549f918a6a"
+    },
+    "mintShielded.zkir": {
+      "type": "file",
+      "size": 4286,
+      "hash": "19c3c377ab48c3b213121eff6973192c65fe9e8742542db7ca8c9a8604c405d8"
+    },
+    "mintUnshielded.bzkir": {
+      "type": "file",
+      "size": 1422,
+      "hash": "d66b6d078d13eaf309b2871bacd6036be0ad9a8b06626b47f45cc45a282f99ff"
+    },
+    "mintUnshielded.zkir": {
+      "type": "file",
+      "size": 4084,
+      "hash": "1e1e3a270ab831c0b6c79f51ba1019d845be1d9cf87f71463ef4bcf0a853b0e4"
+    }
+  },
+  "keys": {
+    "type": "directory",
+    "mintShielded.prover": {
+      "type": "file",
+      "size": 22550035,
+      "hash": "13fb8b2babe253bdde48571b6355f4044a8a4f7ef9211d97a924f056a0863e91"
+    },
+    "mintShielded.verifier": {
+      "type": "file",
+      "size": 2121,
+      "hash": "67c9ee95dc8e8fef0c382620ab1ec70ad8b56f45c43310e0d400302e56af6f89"
+    },
+    "mintUnshielded.prover": {
+      "type": "file",
+      "size": 11277982,
+      "hash": "038240b2c7ef82e77d1aa0b55d75bff4ad379c8d8ee233468a2e09c358c50ab9"
+    },
+    "mintUnshielded.verifier": {
+      "type": "file",
+      "size": 2121,
+      "hash": "89648ad931c35f396ec3b0a53925dd9a10935b54d0e846248b4e4383041704aa"
+    }
+  }
+}

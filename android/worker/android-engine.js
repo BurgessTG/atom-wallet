@@ -1,6 +1,6 @@
 import { proofRequest } from './proof-request.mjs';
 
-globalThis.mdwaNativeProof = async (...args) => {
+async function nativeProof(...args) {
   const bytes = await proofRequest(...args);
   const channel = new MessageChannel();
   return new Promise((resolve, reject) => {
@@ -11,5 +11,10 @@ globalThis.mdwaNativeProof = async (...args) => {
     };
     self.postMessage({ nativeProof: bytes }, [bytes.buffer, channel.port2]);
   });
+}
+globalThis.mdwaNativeProof = async (...args) => {
+  const done = globalThis.mdwaProgress?.proof(args[3]);
+  try { const result = await nativeProof(...args); done?.(false); return result; }
+  catch (error) { done?.(true); throw error; }
 };
 await import('/engine-worker.js');

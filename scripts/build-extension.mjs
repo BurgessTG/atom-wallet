@@ -14,7 +14,8 @@ import { NETWORKS } from '../wallet/networks.mjs';
 import { wasmPlugin, forbidPlugin } from './esbuild-plugins.mjs';
 
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
-const out = path.join(root, 'build/extension');
+const android = process.argv.includes('--android');
+const out = path.join(root, android ? 'build/android-worker' : 'build/extension');
 const src = path.join(root, 'extension/src');
 const modules = path.join(root, 'node_modules');
 const proverClient = path.join(modules, '@midnightntwrk/wallet-sdk-prover-client/dist');
@@ -50,8 +51,10 @@ const common = {
 // root it resolves to /dist/proof-worker.js, which is where they are emitted.
 const workers = await build({
   ...common,
+  // Both compiled dApps must construct states from the worker's single ledger instance.
+  ...(android ? { alias:{ '@midnight-ntwrk/compact-runtime':path.join(modules, '@midnight-ntwrk/compact-runtime') } } : {}),
   entryPoints: {
-    'engine-worker': path.join(src, 'engine-worker.js'),
+    'engine-worker': android ? path.join(root, 'android/worker/engine-entry.js') : path.join(src, 'engine-worker.js'),
     'dist/proof-worker': path.join(proverClient, 'proof-worker.js'),
     'dist/proof-worker-zkir-v3': path.join(proverClient, 'proof-worker-zkir-v3.js'),
   },

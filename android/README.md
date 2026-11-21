@@ -2,19 +2,23 @@
 
 This Android client uses Midnight Preview. Godot draws the controls, text, QR codes and artwork through its mobile Vulkan renderer. The APK bundles the Midnight SDK worker and a native Rust prover. One private WebMessagePort connects the UI to the SDK in Android System WebView. A second carries proof requests to the native library. Android keeps up to 64 MiB of HTTP cache for the public proving files. The SDK verifies circuit keys and public parameters against its release hashes when loading them. Private proof inputs stay in the app when local proving is selected.
 
-<img src="../docs/screenshots/android-overview.png" alt="Android demo wallet showing available NIGHT, DUST capacity and wallet navigation" width="290">
+<img src="../docs/screenshots/android-overview.png" alt="Android demo wallet showing assets, recent activity and wallet navigation" width="290">
 
 ## Use the wallet
 
 Choose **Create wallet** to generate a recovery phrase, record it in order and set a password. **Restore wallet** opens an existing Preview wallet from its phrase and starts its shielded scan at the beginning of the chain. The worker encrypts the vault in the app’s IndexedDB storage. Leaving the app closes the worker and locks the wallet. If you leave during submission, check Activity after unlocking before retrying.
 
-The client shows available NIGHT, shielded and unshielded assets, DUST generation and transaction history. **Receive** displays and copies the selected public, shielded or DUST generation address. **Send** prepares a single public NIGHT transfer for review. DUST registration and deregistration each have a separate fee review. The Chrome extension provides the other networks, multi-recipient sends, token management and dApp connections.
+The client shows available NIGHT, shielded and unshielded assets, DUST generation and transaction history. The QR icon opens **Receive**, which displays and copies the selected public, shielded or DUST generation address. The paper airplane opens **Send**, which supports one shielded or unshielded recipient per transfer. Select the address kind, choose a token held in that balance, and review the amount and DUST fee. A wallet with no shielded tokens can open **Receive shielded tokens** to share its QR code or address. Unlabelled tokens use whole base units. Tap **DUST** to manage generation and review its fee. Tap a custom asset to set its display name, symbol and decimal places. The Chrome extension also exposes other networks, multi-recipient sends and site connections.
+
+**Explore → mdwa test dApp** opens the bundled Android site at `mdwa.local` with a Preview token contract and the example public counter. Deploy a contract, then mint shielded or unshielded tokens to your own wallet, or increment the counter. The review shows the action, contract and estimated DUST fee. Each instance has its own public state feed. The token's mint count and the counter's current value update from the indexer. Each deployment has distinct token types.
+
+The bottom icons open Wallet, Activity, Explore and Settings. Open an activity row to see its receipt. **On-chain receipt** reads execution and block height from the Preview indexer. **View on explorer** opens Night Scan in the app. Explore also accepts a public transaction hash and checks again on new finalized heads while its receipt awaits indexing. New transactions show elapsed time for review, individual local proofs and submission through finalization. Their recorded steps are available in Activity. The settings shield contains endpoint, proving, rescan and lock controls. After unlock, an encrypted saved balance can appear while the SDK catches up. The UI subscribes to wallet changes, contract state and finalized heads. Balancing a transaction still requires current wallet state.
 
 **Explore demo wallet** opens an offline sample with a transfer review and DUST registration walkthrough. Sample balances and confirmations exist only in that session.
 
 ## Local proving
 
-Choose **Test local prover** on the welcome screen or under **Session** in an unlocked wallet. The app generates a sample shielded output, proves it locally and checks it with the stock ledger-v9 verifier. Downloading uncached public circuit material requires internet. The displayed time includes that download and verification. The test uses no funds and sends no transaction.
+Choose **Test local prover** on the welcome screen or under **Settings → Proving** in an unlocked wallet. The app generates a sample shielded output, proves it locally and checks it with the stock ledger-v9 verifier. Downloading uncached public circuit material requires internet. The displayed time includes that download and verification. The test uses no funds and sends no transaction.
 
 The native prover runs BLS12-381 scalar transforms and quotient division on Vulkan. A workgroup processes seven transform stages per dispatch and reuses public twiddle tables across calls. For large G1 multi-scalar multiplications (MSMs), the prover combines repeated coefficients, then splits each scalar into a low byte and 247 upper bits. Vulkan sums the low-byte buckets while the CPU computes the upper contribution on the same bases. The CPU combines both results, builds the witness, evaluates constraints and verifies the proof. The Android backend requires a hardware Vulkan compute adapter. The Apple implementation that informed this work is [Seungheon Oh’s Metal prover](https://github.com/SeungheonOh/midnight-zk/tree/3531dff44cc66c5c6afaa15d49bae3b207362b04/metal).
 
@@ -37,6 +41,7 @@ From the repository root, after building, run
 
 ```sh
 godot --headless --path android/ui --script ../check-ui.gd
+node android/check-progress.mjs
 node android/check-worker.mjs
 node android/check-worker.mjs --live
 ```
@@ -70,4 +75,4 @@ The wallet test invoked **Test local prover** in an isolated Android app with th
 
 Fresh processes on the Adreno 840 and RTX 2070 SUPER each generated a 4,853-byte shielded-output proof with 151 Vulkan transforms, 28 GPU-assisted MSMs and one quotient division. The stock v8 and v9 ledgers each accepted the corresponding proof and rejected a one-bit alteration. The packaged wallet worker also passed its proof-port test in desktop Chromium.
 
-The UI pack passed the touch-flow checks. The earlier UI build synced a new Preview wallet in desktop Chromium. An Android 15 x86_64 emulator installed that build and selected Vulkan 1.3 with SwiftShader. Its stock WebView 124 renderer crashed at the same native instruction in MDWA and in the system WebView shell displaying a blank page. The handset test used a synthetic shielded output. Funded transaction submission remains unverified.
+The UI pack passed the touch-flow checks. The earlier UI build synced a new Preview wallet in desktop Chromium. An Android 15 x86_64 emulator installed that build and selected Vulkan 1.3 with SwiftShader. Its stock WebView 124 renderer crashed at the same native instruction in MDWA and in the system WebView shell displaying a blank page. On a Samsung SM-F976U, a funded unshielded 1 tNIGHT self-transfer finalized on Midnight Preview. The handset also verified a synthetic shielded-output proof. A native contract deployment and a one-unit shielded mint subsequently finalized on Preview. The funded Samsung wallet recognized the output and balanced a shielded self-transfer for review. The send was cancelled at review for the owner to perform manually.
