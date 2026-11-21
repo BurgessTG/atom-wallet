@@ -9,13 +9,15 @@
             for value in a.iter() {
                 (value as &dyn Any).downcast_ref::<Fq>().unwrap().write_raw(&mut data).unwrap();
             }
-            let mut roots = Vec::with_capacity(data.len() / 2);
-            let mut twiddle = Fq::ONE;
-            for _ in 0..a.len()/2 {
-                twiddle.write_raw(&mut roots).unwrap();
-                twiddle *= root;
-            }
-            mdwa_vulkan::ntt(&mut data, &roots, log_n).expect("Vulkan NTT failed");
+            mdwa_vulkan::ntt(&mut data, log_n, root.to_bytes_le(), || {
+                let mut roots = Vec::with_capacity(a.len() * 16);
+                let mut twiddle = Fq::ONE;
+                for _ in 0..a.len()/2 {
+                    twiddle.write_raw(&mut roots).unwrap();
+                    twiddle *= root;
+                }
+                roots
+            }).expect("Vulkan NTT failed");
             for (value, raw) in a.iter_mut().zip(data.chunks_exact(32)) {
                 *(value as &mut dyn Any).downcast_mut::<Fq>().unwrap() = Fq::from_raw_bytes_unchecked(raw);
             }

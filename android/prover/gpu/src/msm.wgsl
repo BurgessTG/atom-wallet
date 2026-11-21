@@ -1,5 +1,5 @@
 // One invocation accumulates a short run of affine G1 points in Jacobian
-// coordinates. Jobs for independent Pippenger windows and buckets run together.
+// coordinates. Jobs for independent buckets run together.
 struct Affine { x: Elem, y: Elem }
 struct Jacobian { x: Elem, y: Elem, z: Elem }
 struct Job { start: u32, count: u32 }

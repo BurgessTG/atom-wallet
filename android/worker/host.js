@@ -31,9 +31,11 @@ window.addEventListener('message', ({ ports }) => {
     pending = channel;
     const bytes = data.nativeProof;
     prover.postMessage('begin ' + bytes.length);
-    // Bound the size of each WebView IPC message on older Android releases.
-    for (let start = 0; start < bytes.length; start += 32768) {
-      prover.postMessage(btoa(String.fromCharCode(...bytes.subarray(start, start + 32768))));
+    // Keep IPC messages bounded and stay below the JS argument limit on older WebViews.
+    const chunkSize = bytes.toBase64 ? 128 * 1024 : 32 * 1024;
+    for (let start = 0; start < bytes.length; start += chunkSize) {
+      const chunk = bytes.subarray(start, start + chunkSize);
+      prover.postMessage(chunk.toBase64 ? chunk.toBase64() : btoa(String.fromCharCode(...chunk)));
     }
     prover.postMessage('end');
   };

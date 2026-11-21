@@ -1,16 +1,26 @@
+use std::collections::VecDeque;
 use std::sync::{
     atomic::{AtomicUsize, Ordering},
-    Mutex, OnceLock,
+    Arc, Mutex, OnceLock,
 };
 use wgpu::util::DeviceExt;
+
+struct TransformPlan {
+    n: u32,
+    root: [u8; 32],
+    table: wgpu::Buffer,
+    stages: Vec<(wgpu::ComputePipeline, wgpu::Buffer, u32)>,
+}
 
 struct Context {
     device: wgpu::Device,
     queue: wgpu::Queue,
     ntt: wgpu::ComputePipeline,
+    tile: wgpu::ComputePipeline,
     quotient: wgpu::ComputePipeline,
     msm: wgpu::ComputePipeline,
     adapter: String,
+    plans: VecDeque<Arc<TransformPlan>>,
 }
 static GPU: OnceLock<Result<Mutex<Context>, String>> = OnceLock::new();
 static TRANSFORMS: AtomicUsize = AtomicUsize::new(0);
@@ -81,6 +91,11 @@ impl Context {
             include_str!("ntt.wgsl"),
             "transform",
         );
+        let tile = pipeline(
+            include_str!("fr.wgsl"),
+            include_str!("ntt.wgsl"),
+            "transform_tile",
+        );
         let quotient = pipeline(
             include_str!("fr.wgsl"),
             include_str!("ntt.wgsl"),
@@ -98,9 +113,11 @@ impl Context {
             device,
             queue,
             ntt,
+            tile,
             quotient,
             msm,
             adapter: info.name,
+            plans: VecDeque::new(),
         })
     }
     fn upload(&self, bytes: &[u8], usage: wgpu::BufferUsages) -> wgpu::Buffer {
@@ -175,33 +192,84 @@ impl Context {
         readback.unmap();
         Ok(())
     }
+
+    fn transform_plan(
+        &mut self,
+        n: u32,
+        root: [u8; 32],
+        make_roots: impl FnOnce() -> Vec<u8>,
+    ) -> Result<Arc<TransformPlan>, String> {
+        if let Some(plan) = self
+            .plans
+            .iter()
+            .find(|plan| plan.n == n && plan.root == root)
+        {
+            return Ok(Arc::clone(plan));
+        }
+        let roots = make_roots();
+        if roots.len() as u64 != u64::from(n) * 16 {
+            return Err("Invalid NTT roots".into());
+        }
+        let mut stages = Vec::new();
+        let mut stage = |pipeline: &wgpu::ComputePipeline, width: u32, groups| {
+            let params = self.upload(
+                &[n.to_le_bytes(), width.to_le_bytes()].concat(),
+                wgpu::BufferUsages::UNIFORM,
+            );
+            stages.push((pipeline.clone(), params, groups));
+        };
+        let mut width = 1;
+        while n / width >= 128 {
+            stage(&self.tile, width, n / 128);
+            width *= 128;
+        }
+        while width < n {
+            stage(&self.ntt, width, (n / 2).div_ceil(64));
+            width *= 2;
+        }
+        let plan = Arc::new(TransformPlan {
+            n,
+            root,
+            stages,
+            table: self.upload(&roots, wgpu::BufferUsages::STORAGE),
+        });
+        // Keep at most 4 MiB of public twiddle tables. Witness buffers stay per call.
+        if roots.len() <= 1 << 20 {
+            if self.plans.len() == 4 {
+                self.plans.pop_front();
+            }
+            self.plans.push_back(Arc::clone(&plan));
+        }
+        Ok(plan)
+    }
 }
 
-pub fn ntt(data: &mut [u8], roots: &[u8], log_n: u32) -> Result<(), String> {
-    let ctx = context()?;
+pub fn ntt(
+    data: &mut [u8],
+    log_n: u32,
+    root: [u8; 32],
+    make_roots: impl FnOnce() -> Vec<u8>,
+) -> Result<(), String> {
     let n = 1u32.checked_shl(log_n).ok_or("Invalid NTT length")?;
-    if data.len() as u64 != u64::from(n) * 32 || roots.len() * 2 != data.len() {
-        return Err("Invalid NTT buffers".into());
+    if data.len() as u64 != u64::from(n) * 32 {
+        return Err("Invalid NTT length".into());
     }
+    let mut ctx = context()?;
+    let plan = ctx.transform_plan(n, root, make_roots)?;
     let usage = wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC;
     let buffers = [ctx.upload(data, usage), ctx.buffer(data.len(), usage)];
-    let table = ctx.upload(roots, wgpu::BufferUsages::STORAGE);
     let mut encoder = ctx.device.create_command_encoder(&Default::default());
-    for level in 0..log_n {
-        let width = 1u32 << level;
-        let params = ctx.upload(
-            &[n.to_le_bytes(), width.to_le_bytes()].concat(),
-            wgpu::BufferUsages::UNIFORM,
-        );
-        let i = level as usize % 2;
+    let mut src = 0;
+    for (pipe, params, groups) in &plan.stages {
         ctx.run(
             &mut encoder,
-            &ctx.ntt,
-            [&buffers[i], &buffers[1 - i], &table, &params],
-            (n / 2).div_ceil(64),
+            pipe,
+            [&buffers[src], &buffers[1 - src], &plan.table, params],
+            *groups,
         )?;
+        src = 1 - src;
     }
-    ctx.read(encoder, &buffers[log_n as usize % 2], data)?;
+    ctx.read(encoder, &buffers[src], data)?;
     TRANSFORMS.fetch_add(1, Ordering::Relaxed);
     Ok(())
 }
@@ -230,15 +298,12 @@ pub fn divide_vanishing(data: &mut [u8], factors: &[u8]) -> Result<(), String> {
     Ok(())
 }
 
-// CPU partitions each scalar into byte windows. Each GPU job sums up to 32
-// points in one nonzero bucket. The caller combines the resulting Jacobians.
-pub fn msm_buckets(points: &[u8], scalars: &[[u8; 32]]) -> Result<(Vec<usize>, Vec<u8>), String> {
-    let mut buckets = vec![Vec::new(); 32 * 255];
-    for (i, bytes) in scalars.iter().enumerate() {
-        for (window, &digit) in bytes.iter().enumerate() {
-            if digit != 0 {
-                buckets[window * 255 + digit as usize - 1].push(i as u32);
-            }
+// One unsigned byte per base. A GPU invocation sums up to 32 bases in one bucket.
+pub fn msm_buckets(points: &[u8], digits: &[u8]) -> Result<(Vec<usize>, Vec<u8>), String> {
+    let mut buckets = vec![Vec::new(); 255];
+    for (i, &digit) in digits.iter().enumerate() {
+        if digit != 0 {
+            buckets[usize::from(digit) - 1].push(i as u32);
         }
     }
     let mut jobs = Vec::new();

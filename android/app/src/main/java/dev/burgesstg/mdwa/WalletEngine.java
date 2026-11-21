@@ -2,6 +2,7 @@ package dev.burgesstg.mdwa;
 
 import android.app.Activity;
 import android.net.Uri;
+import android.net.http.HttpResponseCache;
 import android.os.Handler;
 import android.os.Looper;
 import android.view.View;
@@ -19,8 +20,10 @@ import org.godotengine.godot.plugin.GodotPlugin;
 import org.godotengine.godot.plugin.SignalInfo;
 import org.godotengine.godot.plugin.UsedByGodot;
 import java.io.ByteArrayInputStream;
+import java.io.File;
 import java.io.IOException;
 import java.io.FilterInputStream;
+import java.net.ResponseCache;
 import java.net.URL;
 import javax.net.ssl.HttpsURLConnection;
 import java.io.InputStream;
@@ -57,6 +60,13 @@ public final class WalletEngine extends GodotPlugin {
         runOnHostThread(() -> {
             if (requests != null && active) requests.postMessage(new WebMessage(json));
         });
+    }
+
+    private static synchronized void enableMaterialCache(File directory) {
+        if (ResponseCache.getDefault() != null) return;
+        try {
+            HttpResponseCache.install(new File(directory, "prover-http"), 64L * 1024 * 1024);
+        } catch (IOException ignored) { /* Material can still be fetched directly. */ }
     }
 
     // WebView cannot read the public SRS host cross-origin. Publish just
@@ -110,8 +120,10 @@ public final class WalletEngine extends GodotPlugin {
                 if ("https".equals(url.getScheme()) && path != null && path.matches("/[A-Za-z0-9_./-]+") && !path.contains("..")) {
                     if ("GET".equals(r.getMethod()) && path.startsWith("/prover-material/")) {
                         String name = path.substring("/prover-material/".length());
-                        if (name.matches("bls_midnight_2p[0-9]{1,2}|(zswap|dust)/(9|10)/(spend|output|sign)[.](prover|verifier|bzkir)"))
+                        if (name.matches("bls_midnight_2p[0-9]{1,2}|(zswap|dust)/(9|10)/(spend|output|sign)[.](prover|verifier|bzkir)")) {
+                            enableMaterialCache(activity.getCodeCacheDir());
                             return publicMaterial(name);
+                        }
                     }
                     try {
                         InputStream file = activity.getAssets().open("engine" + path);

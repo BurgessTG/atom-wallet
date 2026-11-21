@@ -52,7 +52,8 @@ for (crate, version), digest in versions.items():
         src = Path(tmp) / name
         if crate == "midnight-curves":
             insert(src / "src/fft.rs", "pub fn best_fft<Scalar: Field, G: FftGroup<Scalar>>(a: &mut [G], omega: Scalar, log_n: u32) {", "fft-hook.rs.inc")
-            insert(src / "src/bls12_381/g1.rs", "pub fn multi_exp(points: &[Self], scalars: &[Fq]) -> Self {", "msm-hook.rs.inc")
+            insert(src / "src/bls12_381/g1.rs", "pub fn multi_exp(points: &[Self], scalars: &[Fq]) -> Self {", "msm-compact-hook.rs.inc")
+            insert(src / "src/bls12_381/g1.rs", "let points = p1_affines::from(points);", "msm-hook.rs.inc")
         else:
             insert(src / "src/poly/domain.rs", "// Divide to obtain the quotient polynomial in the coset evaluation\n        // domain.", "quotient-hook.rs.inc")
         with (src / "Cargo.toml").open("a") as manifest:
