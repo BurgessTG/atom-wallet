@@ -76,6 +76,8 @@ func _message(raw: String) -> void:
 			busy = false
 			live_state.clear()
 			boot_error = msg.get("message", "")
+			if demo and msg.type == "fatal":
+				return
 			wipe()
 			demo = false
 			go("welcome")

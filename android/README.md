@@ -35,3 +35,7 @@ node android/check-worker.mjs --live
 ```
 
 The UI check exercises controls, navigation, decimal precision and demo isolation. The worker check uses a disposable Chromium profile to exercise the bundled worker, IndexedDB vault, QR encoding and session locking. Set `CHROMIUM` to your Chromium executable if it is outside `/usr/bin`. The live check creates a fresh throwaway Preview wallet and waits for balances and history. Neither check needs funded coins. Open the desktop demo with `godot --path android/ui`.
+
+### Device verification
+
+The phone APK’s exported UI pack passed the Vulkan touch-flow checks. Its bundled wallet worker synced a new Preview wallet in desktop Chromium. The Android 15 x86_64 emulator installed the app and selected Vulkan 1.3 with SwiftShader. Its stock WebView 124 renderer crashed at the same native instruction in MDWA and in the system WebView shell displaying a blank page. The live wallet session on a physical arm64 phone and submission of a funded transaction are still unverified.

@@ -37,6 +37,8 @@ func run() -> void:
 	check(M.units("42600000000000000",15) == "42.6","Incorrect DUST precision")
 	await tap("Explore demo wallet")
 	check(wallet.page == "home","Demo did not open")
+	wallet._message(JSON.stringify({"type":"fatal","message":"Test worker stopped"}))
+	check(wallet.demo and wallet.page == "home","Worker failure interrupted the offline demo")
 	if OS.get_cmdline_user_args().size() and DisplayServer.get_name() != "headless":
 		RenderingServer.force_draw()
 		root.get_texture().get_image().save_png(OS.get_cmdline_user_args()[0])
