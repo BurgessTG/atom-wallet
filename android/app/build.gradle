@@ -3,12 +3,13 @@ plugins { id 'com.android.application' version '8.7.3' }
 android {
     namespace 'dev.burgesstg.mdwa'
     compileSdk 35
+    ndkVersion "28.2.13676358"
     defaultConfig {
         applicationId 'dev.burgesstg.mdwa'
         minSdk 28
         targetSdk 35
-        versionCode 1
-        versionName '0.1.0'
+        versionCode 2
+        versionName '0.2.0'
     }
     splits {
         abi {
@@ -19,6 +20,7 @@ android {
         }
     }
     androidResources { noCompress += ['pck', 'wasm'] }
+    sourceSets.main.jniLibs.srcDir layout.buildDirectory.dir('generated/proverLibs')
     sourceSets.main.assets.srcDir layout.buildDirectory.dir('generated/walletAssets')
 }
 dependencies {
@@ -35,3 +37,13 @@ def walletAssets = tasks.register('walletAssets', Exec) {
     outputs.dir layout.buildDirectory.dir('generated/walletAssets')
 }
 tasks.named('preBuild').configure { dependsOn walletAssets }
+
+def nativeProver = tasks.register('nativeProver', Exec) {
+    def proverDir = rootProject.file('prover')
+    def destination = layout.buildDirectory.dir('generated/proverLibs').get().asFile
+    workingDir proverDir
+    commandLine 'python3', 'build-android.py', android.ndkDirectory.absolutePath, destination.absolutePath
+    inputs.files fileTree(proverDir) { exclude 'target/**', '.upstream/**', 'gpu/target/**' }
+    outputs.dir destination
+}
+tasks.named('preBuild').configure { dependsOn nativeProver }

@@ -25,6 +25,7 @@ var recipient := ""
 var amount := ""
 var last_tx := ""
 var boot_error := ""
+var proof_status := ""
 
 var frame: MarginContainer
 var body: VBoxContainer
@@ -102,6 +103,7 @@ func _message(raw: String) -> void:
 			callback.call(msg)
 
 func wipe() -> void:
+	proof_status = ""
 	words.clear()
 	overview = {}
 	history = []
@@ -587,5 +589,15 @@ func settings_page() -> void:
 	D.label(box,"Network",13,D.MUTED)
 	D.label(box,"Demo wallet" if demo else "Midnight Preview",19,D.INK,620)
 	D.label(box,"Sample balances and transactions." if demo else "Your wallet locks when MDWA leaves the foreground.",14,D.MUTED,450,true)
+	if not demo:
+		var prover := D.card(body)
+		D.label(prover,"Local Vulkan prover",19,D.INK,620)
+		D.label(prover,proof_status if proof_status else "Verify a sample shielded output on this device. No funds are used.",14,D.MUTED,450,true)
+		D.button(prover,"Test local prover",func():
+			command("checkAndroidProver",{},func(result):
+				proof_status = "Proof verified in %.1f seconds." % result.seconds
+				draw_page()
+			,"Generating and verifying a local proof…")
+		,"secondary","shield")
 	if demo: D.button(body,"Exit demo wallet",exit_demo,"primary","back")
 	else: D.button(body,"Lock wallet",func(): command("lock",{},func(_v): pass,"Locking…"),"primary","lock")

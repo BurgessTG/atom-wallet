@@ -1,6 +1,6 @@
 # mdwa
 
-This fork adds a Vulkan-rendered Android client for Midnight Preview. [Build the Android APK and see the phone UI](android/README.md).
+This fork adds an Android client for Midnight Preview with Vulkan rendering and local Vulkan proof generation. [Build the Android APK and see the phone UI](android/README.md).
 
 The Chrome (MV3) extension is built on Midnight's wallet SDK.
 It talks to a Midnight node and indexer and works on Preview, Preprod, Mainnet

@@ -28,6 +28,7 @@ mkdirSync(path.join(engine, 'dist'));
 for (const file of readdirSync(path.join(extension, 'dist')).filter(f => !f.endsWith('.map'))) {
   cpSync(path.join(extension, 'dist', file), path.join(engine, 'dist', file));
 }
+for (const file of ['android-engine.js', 'proof-request.mjs']) cpSync(path.join(root, 'android/worker', file), path.join(engine, file));
 cpSync(path.join(root, 'android/worker/index.html'), path.join(engine, 'index.html'));
 await build({ entryPoints: [path.join(root, 'android/worker/host.js')], bundle: true, format: 'esm',
   outfile: path.join(engine, 'host.js'), minify: true, legalComments: 'linked' });

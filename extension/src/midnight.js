@@ -31,6 +31,7 @@ import * as ledger from '@midnightntwrk/ledger-v9';
 import * as ledgerV8 from '@midnightntwrk/ledger-v8';
 import { mnemonicToSeed } from '@scure/bip39';
 import { connectionUrls, network as networkInfo } from '../../wallet/networks.mjs';
+import { sampleOutput, verifyOutput } from '../../wallet/sample-output.mjs';
 import { gql, shieldedAnchor, zswapCollapsedUpdate } from './birthday.js';
 
 export const NIGHT = Token.night;
@@ -132,16 +133,32 @@ function limited(provider) {
 // one per ledger version is kept for the engine's life and shared by the
 // wallet's prover and the dApp prover.
 const builtinKeys = {};
-export const builtinKeyMaterial = version => (builtinKeys[version] ??= version === 'v8'
-  ? WasmProver.makeV8KeyMaterialProvider() : WasmProver.makeV9KeyMaterialProvider());
+export function builtinKeyMaterial(version) {
+  const options = globalThis.mdwaNativeProof
+    ? { source: new URL('/prover-material/', globalThis.location.origin) } : undefined;
+  return builtinKeys[version] ??= version === 'v8'
+    ? WasmProver.makeV8KeyMaterialProvider(options) : WasmProver.makeV9KeyMaterialProvider(options);
+}
+
+function localProvider(keyMaterialProvider) {
+  const wasm = Effect.runSync(WasmProver.create({ keyMaterialProvider })).asProvingProvider();
+  if (!globalThis.mdwaNativeProof) return wasm;
+  return { ...wasm, prove: (...args) => globalThis.mdwaNativeProof(keyMaterialProvider, zkirRuntime, ...args) };
+}
+
+export async function checkAndroidProver() {
+  const start = Date.now();
+  const provider = limited(localProvider(builtinKeyMaterial('v9')));
+  const proven = await sampleOutput(ledger).prove(provider, ledger.CostModel.initialCostModel());
+  verifyOutput(ledger, proven);
+  return { seconds: (Date.now() - start) / 1000 };
+}
 
 async function wasmProvingService(forks) {
-  const provider = async keyMaterialProvider =>
-    (await Effect.runPromise(WasmProver.create({ keyMaterialProvider }))).asProvingProvider();
-  const v9 = fromV9ProvingProvider(limited(await provider(builtinKeyMaterial('v9'))));
+  const v9 = fromV9ProvingProvider(limited(localProvider(builtinKeyMaterial('v9'))));
   const entries = [{ range: ProtocolVersion.epochOf(forks.v9, forks.v9), value: v9 }];
   if (forks.v9 > ProtocolVersion.MinSupportedVersion) {
-    const v8 = fromV8ProvingProvider(limited(await provider(builtinKeyMaterial('v8'))));
+    const v8 = fromV8ProvingProvider(limited(localProvider(builtinKeyMaterial('v8'))));
     entries.unshift({ range: ProtocolVersion.epochOf(ProtocolVersion.MinSupportedVersion, forks.v9), value: v8 });
   }
   return wrapVersionedEffectService(makeVersionedProvingServiceEffect({ entries }));
@@ -222,8 +239,7 @@ export function dappProver(prover, lookupDappKey, version = 'v9') {
     const zkir = await zkirRuntime(material?.ir);
     return zkir.check(preimage, { lookupKey: l => (l === location ? Promise.resolve(material) : keyMaterialProvider.lookupKey(l)), getParams: keyMaterialProvider.getParams });
   };
-  const provider = Effect.runSync(WasmProver.create({ keyMaterialProvider })).asProvingProvider();
-  const prove = oneProofAtATime(provider.prove);
+  const prove = oneProofAtATime(localProvider(keyMaterialProvider).prove);
   return {
     check,
     prove: async (preimage, location, binding) => { await check(preimage, location); return prove(preimage, location, binding); },

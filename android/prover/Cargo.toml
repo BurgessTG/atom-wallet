@@ -1,0 +1,38 @@
+[package]
+name = "mdwa-prover"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+anyhow = "1"
+gpu = { package = "mdwa-vulkan", path = "gpu" }
+pollster = "0.4"
+rand = "0.8"
+serialize = { package = "midnight-serialize", version = "=1.2.0" }
+crypto = { package = "midnight-transient-crypto", version = "=3.0.0" }
+crypto_old = { package = "midnight-transient-crypto", version = "=2.2.0" }
+zkir2 = { package = "midnight-zkir", version = "=2.2.0" }
+zkir3 = { package = "midnight-zkir", version = "=3.2.0" }
+
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.21"
+
+[patch.crates-io]
+midnight-curves = { path = ".upstream/midnight-curves-0.3.1" }
+midnight-curves-old = { package = "midnight-curves", path = ".upstream/midnight-curves-0.2.1" }
+
+midnight-proofs = { path = ".upstream/midnight-proofs-0.8.2" }
+midnight-proofs-old = { package = "midnight-proofs", path = ".upstream/midnight-proofs-0.7.3" }
+
+[profile.release]
+opt-level = 2
+debug = false
+strip = "debuginfo"
+
+[dev-dependencies]
+midnight-curves = "=0.3.1"
+group = "0.13"

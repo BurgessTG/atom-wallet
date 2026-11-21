@@ -1,17 +1,24 @@
 // Exercise the same web assets, MessagePort and SDK worker that the APK contains.
 import assert from 'node:assert/strict';
 import http from 'node:http';
+import { Readable } from 'node:stream';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import puppeteer from 'puppeteer-core';
+import { nativeProof } from './prover/run-check.mjs';
 
 const assets = fileURLToPath(new URL('./app/build/generated/walletAssets/engine/', import.meta.url));
 const server = http.createServer(async (req, res) => {
   const name = new URL(req.url, 'http://localhost').pathname.slice(1) || 'index.html';
   try {
+    if (/^prover-material\/(bls_midnight_2p\d{1,2}|(zswap|dust)\/(9|10)\/(spend|output|sign)\.(prover|verifier|bzkir))$/.test(name)) {
+      const upstream = await fetch(new URL(name.slice('prover-material/'.length), 'https://srs.midnight.network/'));
+      res.writeHead(upstream.status, { 'Content-Type': 'application/octet-stream' });
+      return Readable.fromWeb(upstream.body).pipe(res);
+    }
     const data = await readFile(path.join(assets, name));
-    res.setHeader('Content-Type', name.endsWith('.js') ? 'application/javascript' : name.endsWith('.wasm') ? 'application/wasm' : 'text/html');
+    res.setHeader('Content-Type', /\.m?js$/.test(name) ? 'application/javascript' : name.endsWith('.wasm') ? 'application/wasm' : 'text/html');
     res.end(data);
   } catch { res.writeHead(404).end(); }
 });
@@ -21,9 +28,16 @@ try {
   browser = await puppeteer.launch({ executablePath: process.env.CHROMIUM || '/usr/bin/chromium', headless: true });
   const page = await browser.newPage();
   page.setDefaultTimeout(90000);
+  const testProof = process.argv.includes('--proof');
+  if (testProof) {
+    await page.exposeFunction('proveOnHost', async chunks => {
+      const frame = Buffer.concat(chunks.map(chunk => Buffer.from(chunk, 'base64')));
+      return (await nativeProof(frame)).toString('base64');
+    });
+  }
   async function connect() {
     await page.goto(`http://127.0.0.1:${server.address().port}/`);
-    await page.evaluate(() => {
+    await page.evaluate(testProof => {
       const channel = new MessageChannel();
       const calls = new Map();
       let next = 0;
@@ -39,12 +53,35 @@ try {
         calls.set(id, resolve);
         channel.port1.postMessage(JSON.stringify({ id, method, params }));
       });
-      window.postMessage('connect', location.origin, [channel.port2]);
-    });
+      const ports = [channel.port2];
+      if (testProof) {
+        const prover = new MessageChannel();
+        let chunks;
+        prover.port1.onmessage = async ({ data }) => {
+          if (data.startsWith('begin ')) chunks = [];
+          else if (data === 'end') {
+            try {
+              const proof = await window.proveOnHost(chunks);
+              prover.port1.postMessage(JSON.stringify({ proof }));
+            } catch (e) {
+              prover.port1.postMessage(JSON.stringify({ error: e.message }));
+            }
+          } else chunks.push(data);
+        };
+        ports.push(prover.port2);
+      }
+      window.postMessage('connect', location.origin, ports);
+    }, testProof);
     await page.waitForFunction(() => window.wallet || window.fatal);
     assert.equal(await page.evaluate(() => window.fatal), undefined);
   }
   await connect();
+  if (testProof) {
+    const { result, error } = await page.evaluate(() => window.ask('checkAndroidProver', {}));
+    if (error) throw Error(error.message);
+    assert.ok(result.seconds > 0);
+    console.log('APK wallet worker generated and verified a proof through both private ports.');
+  }
   const before = await page.evaluate(() => window.wallet);
   assert.equal(before.hasWallet, false);
   const live = process.argv.includes('--live');

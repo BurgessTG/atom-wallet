@@ -539,6 +539,7 @@ async function saveSettings({ network, endpoints }) {
 
 // --------------------------------------------------------------- UI calls ---
 const ui = {
+  ...(globalThis.mdwaNativeProof ? { checkAndroidProver: midnight.checkAndroidProver } : {}),
   state: async () => snapshot(),
   generateMnemonic: async () => ({ words: midnight.generateMnemonic() }),
   createWallet, unlock, lock, selectNetwork, resetWallet, rescan, saveSettings,

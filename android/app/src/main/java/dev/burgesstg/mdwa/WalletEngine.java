@@ -20,6 +20,9 @@ import org.godotengine.godot.plugin.SignalInfo;
 import org.godotengine.godot.plugin.UsedByGodot;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
+import java.io.FilterInputStream;
+import java.net.URL;
+import javax.net.ssl.HttpsURLConnection;
 import java.io.InputStream;
 import java.util.Collections;
 import java.util.Set;
@@ -29,6 +32,7 @@ public final class WalletEngine extends GodotPlugin {
     private static final String PAGE = ORIGIN + "/index.html";
     private WebView engineView;
     private WebMessagePort requests;
+    private NativeProver prover;
     private boolean active = true;
     private boolean started;
     private final Handler main = new Handler(Looper.getMainLooper());
@@ -55,6 +59,35 @@ public final class WalletEngine extends GodotPlugin {
         });
     }
 
+    // WebView cannot read the public SRS host cross-origin. Publish just
+    // these static files under our private origin. The SDK verifies each hash.
+    private WebResourceResponse publicMaterial(String name) {
+        HttpsURLConnection connection = null;
+        try {
+            connection = (HttpsURLConnection) new URL("https://srs.midnight.network/" + name).openConnection();
+            connection.setInstanceFollowRedirects(false);
+            connection.setConnectTimeout(15000);
+            connection.setReadTimeout(60000);
+            int status = connection.getResponseCode();
+            if (status != 200) {
+                connection.disconnect();
+                return new WebResourceResponse("text/plain", "utf-8", status == 404 ? 404 : 502,
+                    "Circuit material unavailable", Collections.emptyMap(), new ByteArrayInputStream(new byte[0]));
+            }
+            final HttpsURLConnection upstream = connection;
+            InputStream stream = new FilterInputStream(connection.getInputStream()) {
+                @Override public void close() throws IOException {
+                    try { super.close(); } finally { upstream.disconnect(); }
+                }
+            };
+            return new WebResourceResponse("application/octet-stream", null, stream);
+        } catch (IOException unavailable) {
+            if (connection != null) connection.disconnect();
+            return new WebResourceResponse("text/plain", "utf-8", 502, "Circuit material unavailable",
+                Collections.emptyMap(), new ByteArrayInputStream(new byte[0]));
+        }
+    }
+
     private void open() {
         Activity activity = getActivity();
         if (activity == null) return;
@@ -75,10 +108,15 @@ public final class WalletEngine extends GodotPlugin {
                 if (!ORIGIN.getHost().equals(url.getHost())) return null;
                 String path = url.getPath();
                 if ("https".equals(url.getScheme()) && path != null && path.matches("/[A-Za-z0-9_./-]+") && !path.contains("..")) {
+                    if ("GET".equals(r.getMethod()) && path.startsWith("/prover-material/")) {
+                        String name = path.substring("/prover-material/".length());
+                        if (name.matches("bls_midnight_2p[0-9]{1,2}|(zswap|dust)/(9|10)/(spend|output|sign)[.](prover|verifier|bzkir)"))
+                            return publicMaterial(name);
+                    }
                     try {
                         InputStream file = activity.getAssets().open("engine" + path);
                         String mime = path.endsWith(".wasm") ? "application/wasm"
-                            : path.endsWith(".js") ? "application/javascript" : "text/html";
+                            : (path.endsWith(".js") || path.endsWith(".mjs")) ? "application/javascript" : "text/html";
                         return new WebResourceResponse(mime, null, file);
                     } catch (IOException ignored) { /* Return a local 404. */ }
                 }
@@ -89,6 +127,8 @@ public final class WalletEngine extends GodotPlugin {
             @Override public void onPageFinished(WebView v, String url) {
                 if (engineView != v || requests != null || !PAGE.equals(url)) return;
                 WebMessagePort[] pair = v.createWebMessageChannel();
+                WebMessagePort[] proofs = v.createWebMessageChannel();
+                prover = new NativeProver(proofs[0]);
                 requests = pair[0];
                 requests.setWebMessageCallback(new WebMessagePort.WebMessageCallback() {
                     private boolean connected;
@@ -103,7 +143,7 @@ public final class WalletEngine extends GodotPlugin {
                         emitSignal("message", message.getData());
                     }
                 });
-                v.postWebMessage(new WebMessage("connect", new WebMessagePort[]{pair[1]}), ORIGIN);
+                v.postWebMessage(new WebMessage("connect", new WebMessagePort[]{pair[1], proofs[1]}), ORIGIN);
             }
 
             @Override public boolean onRenderProcessGone(WebView v, RenderProcessGoneDetail detail) {
@@ -131,6 +171,8 @@ public final class WalletEngine extends GodotPlugin {
         main.removeCallbacks(bootTimeout);
         if (requests != null) requests.close();
         requests = null;
+        if (prover != null) prover.close();
+        prover = null;
         if (engineView == null) return;
         WebView view = engineView;
         engineView = null;
