@@ -315,6 +315,9 @@ func welcome() -> void:
 			D.label(body, boot_error if boot_error else explanation, 13, D.MUTED, 450, true)
 			if boot_error and bridge: D.button(body,"Retry",func(): boot_error = ""; draw_page(); bridge.retryEngine())
 		D.button(body,"Explore demo wallet",enter_demo,"quiet","next")
+		if ready:
+			D.button(body,"Test local prover",test_local_prover,"quiet","shield")
+			if proof_status: D.label(body,proof_status,14,D.MUTED,450,true)
 
 func onboarding() -> void:
 	if page == "phrase":
@@ -593,11 +596,12 @@ func settings_page() -> void:
 		var prover := D.card(body)
 		D.label(prover,"Local Vulkan prover",19,D.INK,620)
 		D.label(prover,proof_status if proof_status else "Verify a sample shielded output on this device. No funds are used.",14,D.MUTED,450,true)
-		D.button(prover,"Test local prover",func():
-			command("checkAndroidProver",{},func(result):
-				proof_status = "Proof verified in %.1f seconds." % result.seconds
-				draw_page()
-			,"Generating and verifying a local proof…")
-		,"secondary","shield")
+		D.button(prover,"Test local prover",test_local_prover,"secondary","shield")
 	if demo: D.button(body,"Exit demo wallet",exit_demo,"primary","back")
 	else: D.button(body,"Lock wallet",func(): command("lock",{},func(_v): pass,"Locking…"),"primary","lock")
+
+func test_local_prover() -> void:
+	command("checkAndroidProver",{},func(result):
+		proof_status = "Proof verified in %.1f seconds." % result.seconds
+		draw_page()
+	,"Generating and verifying a local proof…")

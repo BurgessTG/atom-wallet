@@ -14,7 +14,7 @@ The client shows available NIGHT, shielded and unshielded assets, DUST generatio
 
 ## Local proving
 
-In an unlocked wallet, open **Session → Test local prover**. The app generates a sample shielded output, proves it locally and checks it with the stock ledger-v9 verifier. Downloading uncached public circuit material requires internet. The displayed time includes that download and verification. The test uses no funds and sends no transaction.
+Choose **Test local prover** on the welcome screen or under **Session** in an unlocked wallet. The app generates a sample shielded output, proves it locally and checks it with the stock ledger-v9 verifier. Downloading uncached public circuit material requires internet. The displayed time includes that download and verification. The test uses no funds and sends no transaction.
 
 The native prover runs BLS12-381 scalar transforms, G1 bucket summation for large multi-scalar multiplications, and quotient division on Vulkan compute. The CPU builds the witness, evaluates constraints, combines the MSM buckets, and verifies the result. The Android backend requires a hardware Vulkan compute adapter. The Apple implementation that informed this work is [Seungheon Oh’s Metal prover](https://github.com/SeungheonOh/midnight-zk/tree/3531dff44cc66c5c6afaa15d49bae3b207362b04/metal).
 
@@ -56,6 +56,12 @@ cargo test --locked --release --manifest-path android/prover/Cargo.toml --test v
 
 ### Device verification
 
+On a Samsung SM-F976U with an Adreno 840, the wallet displayed 12.5 seconds for the first verified sample and 5.9 seconds for the immediate repeat. A separate native run on the phone reported 151 Vulkan transforms, 30 GPU-assisted MSMs and one quotient division. The stock ledger-v9 verifier on the workstation accepted that proof and rejected a one-bit alteration.
+
+A native CPU/Vulkan comparison used the same serialized shielded-output input, pinned libraries and release optimization level. Each prover ran once in a fresh process and five more times in that process, alternating between backends. The native timer included proving and its internal verification. Input downloads, USB transfer and independent verification were outside the timer. All 12 proofs passed independent verification. Warm Vulkan times had a median of 6.58 s (5.18–13.19 s), and stock CPU times had a median of 2.31 s (1.47–3.28 s). Android reported thermal status 0 before the comparison and 2 near the end.
+
+In a separate warm run, 30 MSM bucket calls took a combined 3.21 s of the 6.59 s native proof check. Transforms took 0.64 s and quotient division took 0.005 s. These intervals include buffer uploads, GPU execution and result readback. MSM bucket processing and transfer are the first places to investigate on this handset.
+
 On an RTX 2070 SUPER, a shielded-output proof used 151 Vulkan transforms, 30 GPU-assisted MSMs and one quotient division. The stock v8 and v9 ledgers each accepted a proof and rejected a one-bit alteration. The packaged wallet worker also proved and verified a sample through its private message ports in desktop Chromium with a host native prover.
 
-The UI pack passed the touch-flow checks. The earlier UI build synced a new Preview wallet in desktop Chromium. An Android 15 x86_64 emulator installed that build and selected Vulkan 1.3 with SwiftShader. Its stock WebView 124 renderer crashed at the same native instruction in MDWA and in the system WebView shell displaying a blank page. The live wallet session on a physical arm64 phone and submission of a funded transaction are still unverified.
+The UI pack passed the touch-flow checks. The earlier UI build synced a new Preview wallet in desktop Chromium. An Android 15 x86_64 emulator installed that build and selected Vulkan 1.3 with SwiftShader. Its stock WebView 124 renderer crashed at the same native instruction in MDWA and in the system WebView shell displaying a blank page. The handset test used a synthetic shielded output. Funded transaction submission remains unverified.
