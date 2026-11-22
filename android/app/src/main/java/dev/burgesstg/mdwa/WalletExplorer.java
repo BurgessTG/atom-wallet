@@ -13,14 +13,12 @@ import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.widget.FrameLayout;
 import java.io.ByteArrayInputStream;
-import java.io.IOException;
 import java.util.Collections;
 import java.util.function.Consumer;
 import org.json.JSONObject;
 
-/** Two public destinations in a separate view with no wallet message port. */
+/** Public block explorers and faucets in a separate view with no wallet message port. */
 final class WalletExplorer {
-    private static final String LOCAL = "mdwa.local";
     // Block explorers and faucets for the chains the wallet offers.
     private static final java.util.Set<String> PUBLIC = new java.util.HashSet<>(java.util.Arrays.asList(
         "explorer.preview.midnight.network", "explorer.preprod.midnight.network", "midnightexplorer.com",
@@ -39,7 +37,7 @@ final class WalletExplorer {
 
     private static boolean allowed(Uri uri) {
         return "https".equals(uri.getScheme()) && (uri.getPort() == -1 || uri.getPort() == 443)
-            && uri.getUserInfo() == null && (LOCAL.equals(uri.getHost()) || PUBLIC.contains(uri.getHost()));
+            && uri.getUserInfo() == null && PUBLIC.contains(uri.getHost());
     }
 
     private static WebResourceResponse missing() {
@@ -58,26 +56,14 @@ final class WalletExplorer {
         page.setWebViewClient(new WebViewClient() {
             @Override public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest req) {
                 Uri uri = req.getUrl();
-                if (!req.isForMainFrame() || !allowed(uri)) return true;
-                String path = uri.getPath();
-                if (LOCAL.equals(uri.getHost()) && ("/open/token".equals(path) || "/open/counter".equals(path))) {
-                    if (req.hasGesture() && "https://mdwa.local/".equals(view.getUrl())) {
-                        notify.accept("{\"type\":\"exploreAction\",\"kind\":" + JSONObject.quote(uri.getLastPathSegment()) + "}");
-                    }
-                    return true;
-                }
-                return false;
+                return !req.isForMainFrame() || !allowed(uri);
             }
 
             @Override public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest req) {
                 Uri uri = req.getUrl();
                 if (!"https".equals(uri.getScheme()) || "appassets.androidplatform.net".equalsIgnoreCase(uri.getHost())
                     || (req.isForMainFrame() && !allowed(uri))) return missing();
-                if (!LOCAL.equals(uri.getHost())) return null;
-                if (!allowed(uri) || !"/".equals(uri.getPath()) || !"GET".equals(req.getMethod())) return missing();
-                try {
-                    return new WebResourceResponse("text/html", "UTF-8", activity.getAssets().open("explore/index.html"));
-                } catch (IOException e) { return missing(); }
+                return null;
             }
 
             @Override public void onPageFinished(WebView view, String url) {

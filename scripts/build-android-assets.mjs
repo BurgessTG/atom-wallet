@@ -19,11 +19,6 @@ function run(bin, args) {
 run(process.execPath, ['scripts/build-extension.mjs', '--android']);
 rmSync(assets, { recursive: true, force: true });
 mkdirSync(engine, { recursive: true });
-for (const [name, source] of [['token', 'android/contracts/managed'], ['counter', 'dapp/contract/managed']]) {
-  for (const dir of ['compiler', 'keys', 'zkir']) {
-    cpSync(path.join(root, source, dir), path.join(engine, name + '-contract', dir), { recursive:true });
-  }
-}
 mkdirSync(path.join(assets, 'licenses'));
 cpSync(path.join(ui, 'Inter-LICENSE.txt'), path.join(assets, 'licenses/Inter.txt'));
 for (const file of ['engine-worker.js', 'engine-worker.js.LEGAL.txt', 'LICENSE', 'wasm']) {

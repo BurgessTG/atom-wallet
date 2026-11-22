@@ -9,16 +9,26 @@ var wallet: Control
 var failed := false
 var touch_count := 0
 
+const OTHER_TOKEN := "d1b3f32e66ba000000000000000000000000000000000000000000000000fe91"
+const SAMPLE := {
+	"night": {"available":"2840750000","pending":"0"},
+	"dust": {"balance":"42600000000000000","cap":"60000000000000000","registeredNight":"1200000000","unregisteredNight":"1640750000"},
+	"unshielded": [{"type": M.NIGHT_TYPE,"amount":"2840750000"}], "shielded":[{"type": OTHER_TOKEN,"amount":"125"}]
+}
+const HISTORY := [
+	{"kind":"receive","status":"finalized","hash":"Sample receipt 01","deltas":[{"type":M.NIGHT_TYPE,"amount":"125000000","kind":"unshielded"}]},
+	{"kind":"send","status":"finalized","hash":"Sample payment 02","deltas":[{"type":M.NIGHT_TYPE,"amount":"-34250000","kind":"unshielded"}]},
+	{"kind":"dust","status":"confirmed","hash":"Sample registration 03","deltas":[]}
+]
+
 # Drive the normal bridge callbacks without spending funds or storing a seed.
 class TestEngine extends RefCounted:
 	var wallet: Control
-	var deployed := {}
-	var contract_params := {}
 	var calls := []
 	var retries := 0
 	var receipt_reads := 0
 	var entry := {"node":"wss://node.example","indexerHttp":"https://indexer.example","indexerWs":"wss://indexer.example","prover":{"kind":"wasm","url":"https://proof.example"}}
-	var available := M.SAMPLE.duplicate(true)
+	var available := SAMPLE.duplicate(true)
 	var second_token := "e".repeat(64)
 
 	var bio_enabled := false
@@ -51,7 +61,7 @@ class TestEngine extends RefCounted:
 			"generateMnemonic":
 				result = {"words":M.wordlist().slice(100,124)}
 			"overview": result = available
-			"walletHome": result = {"overview":available,"recent":M.HISTORY.slice(0,3)}
+			"walletHome": result = {"overview":available,"recent":HISTORY.slice(0,3)}
 			"settings": result = {"birthday":{"height":100},"endpoints":{"preview":entry,"preprod":entry,"mainnet":entry},"defaults":{"preview":entry,"preprod":entry,"mainnet":entry}}
 			"chainReceipt":
 				receipt_reads += 1
@@ -60,16 +70,8 @@ class TestEngine extends RefCounted:
 			"activityItem":
 				result = {"hash":"a".repeat(64),"partial":true,"status":"finalized","block":123} if message.params.hash=="test-id" else null
 			"tokenLabels": result = [{"kind":"shielded","type":second_token,"name":"Test asset","symbol":"TEST","decimals":3}]
-			"history": result = {"items": M.HISTORY if message.params.offset == 0 else [M.HISTORY[2]], "total":13}
-			"previewTokenContract": result = {"address":"1".repeat(64) if deployed.has(message.params.kind) else null}
-			"prepareTokenAction":
-				contract_params = message.params
-				result = {"id":"contract-recipe","address":"1".repeat(64),"amount":message.params.amount,"action":message.params.action,"fee":"50000"}
-			"submitTokenAction":
-				deployed[contract_params.kind] = true
-				result = {"txId":"contract-id"}
+			"history": result = {"items": HISTORY if message.params.offset == 0 else [HISTORY[2]], "total":13}
 			"setTokenLabel": result = message.params
-			"checkAndroidProver": result = {"seconds":2.5}
 			"previewSend": result = {"id":"recipe","outputs":message.params.outputs,"fee":"10000"}
 			"send","dustApply":
 				var now := int(Time.get_unix_time_from_system()*1000)
@@ -192,56 +194,6 @@ func run() -> void:
 	check(M.exceeds("100000000000000000001","100000000000000000000"),"Large overspend accepted")
 	check(M.units("42600000000000000",15) == "42.6","Incorrect DUST precision")
 	check(M.wordlist().size() == 2048 and M.is_word("zoo") and not M.is_word("zooo") and M.complete("aba") == ["abandon"],"BIP-39 word list wrong")
-	await tap("Try the demo")
-	check(wallet.page == "home" and wallet.demo,"Demo did not open")
-	for label in wallet.body.find_children("*","Label",true,false):
-		if label.text=="2,840.75": check(label.get_line_count()==1,"Balance wrapped across multiple lines")
-	wallet._message(JSON.stringify({"type":"fatal","message":"Test worker stopped"}))
-	check(wallet.demo and wallet.page == "home","Worker failure interrupted the offline demo")
-	if OS.get_cmdline_user_args().size() and DisplayServer.get_name() != "headless":
-		RenderingServer.force_draw()
-		root.get_texture().get_image().save_png(OS.get_cmdline_user_args()[0])
-	await tap("Send")
-	check(wallet.page == "send" and wallet.sheet_open,"Send sheet did not open")
-	await drag_from_button()
-	await tap("Use sample transfer")
-	await tap("Review")
-	check(wallet.page == "review","Review not reached")
-	await hold("Hold to send")
-	check(wallet.page == "sent","Demo confirmation failed")
-	await tap("Back to wallet")
-	await tap("Send")
-	await tap("Choose asset")
-	check(wallet.page == "choose_token","Asset picker did not open")
-	await tap("Select Demo token")
-	check(wallet.page == "send" and wallet.send_kind == "shielded","Private asset not selected")
-	await tap("Use sample transfer")
-	await tap("Review")
-	check(wallet.page == "review" and wallet.preview.outputs[0].kind == "shielded" and wallet.preview.outputs[0].type == M.DEMO_TYPE and wallet.preview.outputs[0].amount == "1","Private review used the wrong asset")
-	await tap("Back")
-	check(wallet.page == "send" and wallet.recipient == "Demo recipient" and wallet.amount == "1","Review lost its draft")
-	await tap("Review")
-	await hold("Hold to send")
-	await tap("Back to wallet")
-	await tap("Receive")
-	await tap("Private")
-	check(wallet.receive_kind == "shielded","Address selector failed")
-	await tap("Close")
-	check(wallet.page == "home" and not wallet.sheet_open,"Receive sheet did not close")
-	await tap("DUST generation")
-	check(wallet.page == "dust","DUST view failed")
-	await tap("Register NIGHT")
-	check(wallet.page == "dust_review","DUST review failed")
-	await hold("Hold to confirm")
-	check(wallet.page == "dust","DUST confirmation failed")
-	await tap("Back")
-	await tap("Activity")
-	await tap("Details")
-	check(wallet.detail.get("kind") == "receive","Activity did not open the selected item")
-	if wallet.page == "detail": await tap("Back")
-	await tap("Settings")
-	await tap("Exit demo")
-	check(wallet.page == "welcome" and wallet.overview.is_empty(),"Demo data escaped its session")
 	await bridge_checks()
 	DirAccess.remove_absolute(ProjectSettings.globalize_path("user://check-prefs.cfg"))
 	if not failed: print("Wallet UI checks passed at ",root.get_visible_rect().size,": ",touch_count," taps")
@@ -303,16 +255,24 @@ func bridge_checks():
 	state.locked=false
 	wallet._message(JSON.stringify({"type":"state","state":state}))
 	await settle()
+	for label in wallet.body.find_children("*","Label",true,false):
+		if label.text=="2,840.75": check(label.get_line_count()==1,"Balance wrapped across multiple lines")
+	if OS.get_cmdline_user_args().size() and DisplayServer.get_name() != "headless":
+		RenderingServer.force_draw()
+		root.get_texture().get_image().save_png(OS.get_cmdline_user_args()[0])
 	await tap("Send")
+	check(wallet.page == "send" and wallet.sheet_open,"Send sheet did not open")
+	await drag_from_button()
 	await tap("Choose asset")
+	check(wallet.page == "choose_token","Asset picker did not open")
 	await tap("Select Test asset")
 	check(wallet.send_kind == "shielded" and wallet.token_type == engine.second_token,"Labelled private token not selected")
 	if DisplayServer.get_name() != "headless":
 		DisplayServer.clipboard_set(state.addresses.shielded)
 		await tap("Paste")
 		check(wallet.recipient==state.addresses.shielded,"Clipboard recipient did not populate")
-	await tap("My address")
 	f = fields()
+	if f[0].text.is_empty(): f[0].text=state.addresses.shielded
 	f[1].text="12.346"
 	await tap("Review")
 	check(wallet.page=="send" and "available" in wallet.feedback.text,"Overspend accepted")
@@ -336,7 +296,10 @@ func bridge_checks():
 	await tap("Receive")
 	await tap("Share")
 	check(engine.shared == ["test public address"],"Share sheet did not get the address")
+	await tap("Private")
+	check(wallet.receive_kind == "shielded","Address selector failed")
 	await tap("Close")
+	check(wallet.page == "home" and not wallet.sheet_open,"Receive sheet did not close")
 	await tap("Hide balances")
 	check("••••••" in texts(),"Balances not hidden")
 	await tap("Show balances")
@@ -346,43 +309,17 @@ func bridge_checks():
 	check(engine.calls.any(func(c):return c.method=="dustApply"),"DUST request missing")
 	await tap("Done")
 	await tap("Activity")
+	await tap("Details")
+	check(wallet.detail.get("kind") == "receive","Activity did not open the selected item")
+	if wallet.page == "detail": await tap("Back")
 	await tap("Show more")
 	check(engine.calls.back().method=="history" and engine.calls.back().params.limit==60,"More history not requested")
 	await tap("Explore")
-	check(find_button("mdwa test dApp") == null,"Developer tools visible without developer mode")
+	check(find_button("Find transaction") == null,"Developer tools visible without developer mode")
 	await tap("Settings")
 	await tap("Developer mode")
 	check(wallet.prefs.developer,"Developer mode did not turn on")
-	await tap("Explore")
-	await tap("mdwa test dApp")
-	await tap("Token contract")
-	await tap("Deploy contract")
-	check(wallet.page=="contract_review" and wallet.preview.action=="deploy","Deployment review missing")
-	await hold("Hold to confirm")
-	await tap("Done")
-	await tap("Explore")
-	await tap("mdwa test dApp")
-	await tap("Token contract")
-	await tap("Mint public")
-	check(wallet.preview.action=="mintUnshielded","Wrong public mint action")
-	await tap("Back")
-	await tap("Mint private")
-	check(wallet.preview.action=="mintShielded","Wrong private mint action")
-	await hold("Hold to confirm")
-	await tap("Done")
-	await tap("Explore")
-	await tap("mdwa test dApp")
-	await tap("Counter contract")
-	await tap("Deploy contract")
-	await hold("Hold to confirm")
-	await tap("Done")
-	await tap("Explore")
-	await tap("mdwa test dApp")
-	await tap("Counter contract")
-	await tap("Increment counter")
-	check(wallet.preview.action=="increment","Incorrect counter call")
-	await hold("Hold to confirm")
-	await tap("Done")
+	await tap("Wallet")
 	await tap("Edit token label", 1)
 	f = fields()
 	check(wallet.page=="token_label" and f[2].text=="3","Saved decimals did not load as a whole number")
@@ -409,8 +346,6 @@ func bridge_checks():
 	await tap("Save proving")
 	check(engine.entry.prover.kind=="server","Prover setting did not persist")
 	await tap("Proving")
-	await tap("Run local proof")
-	check("verified" in wallet.proof_status,"Missing proof check result")
 	await tap("On this phone")
 	await tap("Save proving")
 	check(engine.entry.prover.kind=="wasm","Prover setting did not return to the phone")

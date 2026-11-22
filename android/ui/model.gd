@@ -28,17 +28,6 @@ static func exceeds(atomic: String, available: String) -> bool:
 	return atomic.length() > available.length() or (atomic.length() == available.length() and atomic > available)
 
 const NIGHT_TYPE := "0000000000000000000000000000000000000000000000000000000000000000"
-const DEMO_TYPE := "d1b3f32e66ba000000000000000000000000000000000000000000000000fe91"
-const SAMPLE := {
-	"night": {"available":"2840750000","pending":"0"},
-	"dust": {"balance":"42600000000000000","cap":"60000000000000000","registeredNight":"1200000000","unregisteredNight":"1640750000"},
-	"unshielded": [{"type": NIGHT_TYPE,"amount":"2840750000"}], "shielded":[{"type": DEMO_TYPE,"amount":"125"}]
-}
-const HISTORY := [
-	{"kind":"receive","status":"finalized","hash":"Sample receipt 01","deltas":[{"type":NIGHT_TYPE,"amount":"125000000","kind":"unshielded"}]},
-	{"kind":"send","status":"finalized","hash":"Sample payment 02","deltas":[{"type":NIGHT_TYPE,"amount":"-34250000","kind":"unshielded"}]},
-	{"kind":"dust","status":"confirmed","hash":"Sample registration 03","deltas":[]}
-]
 
 const BIP39 = preload("res://bip39.gd")
 static var _word_set := {}

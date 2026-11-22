@@ -1,6 +1,6 @@
 // All timestamps are observed in this worker. The UI only interpolates the running stopwatch.
-const preparations = new Set(['previewSend', 'dustPreview', 'prepareTokenAction']);
-const approvals = new Set(['send', 'dustApply', 'submitTokenAction']);
+const preparations = new Set(['previewSend', 'dustPreview']);
+const approvals = new Set(['send', 'dustApply']);
 let active;
 const drafts = new Map();
 
@@ -31,8 +31,7 @@ function finish(status) {
 export function proof(location) {
   if (!active || active.end) return () => {};
   const trace = active;
-  const name = location.startsWith('midnight/') ? location.split('/').filter(Boolean).at(-1)
-    : (trace.action === 'increment' ? 'increment' : trace.action);
+  const name = location.split('/').filter(Boolean).at(-1);
   const row = { name, start:Date.now() };
   const parent = trace.steps.at(-1);
   (parent.proofs ??= []).push(row);
@@ -56,7 +55,7 @@ export function discard(id) { drafts.delete(String(id)); }
 export function clear() { active = null; drafts.clear(); }
 export async function run(method, params, id, execute) {
   if (method === 'cancel') drafts.delete(String(params.id));
-  if (method === 'lock' || method === 'resetWallet') clear();
+  if (['lock', 'resetWallet', 'eraseWallet'].includes(method)) clear();
   const prepare = preparations.has(method);
   if (!prepare && !approvals.has(method)) return execute();
   if (active?.status === 'running') throw Error('A transaction is already in progress');

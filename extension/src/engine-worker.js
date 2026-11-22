@@ -310,8 +310,6 @@ async function stopRun(run, { save = true } = {}) {
   run.stopped = true;
   clearTimeout(run.headRetry);
   run.headSocket?.close();
-  for (const feed of run.contractFeeds?.values() ?? []) feed.subscription?.unsubscribe();
-  await run.contractData?.dispose().catch(() => {});
   for (const t of run.timers) clearInterval(t);
   run.subscription?.unsubscribe();
   if (!run.wallet) return;
@@ -592,13 +590,6 @@ async function saveSettings({ network, endpoints }) {
 }
 
 // --------------------------------------------------------------- UI calls ---
-function contractRecord(kind) {
-  if (!globalThis.mdwaPreviewContracts || store.network !== 'preview') throw Error('Contracts require the Android Preview wallet');
-  if (kind === 'token') return 'previewToken';
-  if (kind === 'counter') return 'previewCounter';
-  throw Error('Unknown contract');
-}
-
 const ui = {
   ...(globalThis.mdwaNativeProof ? { checkAndroidProver: midnight.checkAndroidProver } : {}),
   state: async () => snapshot(),
@@ -618,101 +609,6 @@ const ui = {
     const { run, wallet: w, s } = await live();
     return { ...midnight.overviewOf(s, w.networkId, new Date(), run), birthday: state.birthday };
   },
-  previewTokenContract: async ({ kind = 'token' } = {}) => {
-    if (state.locked) throw lockedError();
-    const record = await readRecord(contractRecord(kind));
-    if (!record?.address) return { address:null };
-    const run = session;
-    let value = null;
-    if (run?.wallet) {
-      const urls = connectionUrls(store.network, await endpointsFor(store.network));
-      if (run === session && !run.stopped) {
-        value = self.mdwaPreviewContracts.watchContract(run, urls, kind, record.address, () => { state.viewRevision++; publish(); });
-      }
-    }
-    return { address:record.address, last:record.last, pending:!!record.pending, value, types:kind === 'token' ? self.mdwaPreviewContracts.tokenTypes(record.address) : null };
-  },
-  prepareTokenAction: async ({ action, amount = '1', kind = 'token' }) => withBusy('contract', 'preparing', async () => {
-    const { run, wallet:w, s } = await synced();
-    const recordName = contractRecord(kind);
-    const record = await readRecord(recordName);
-    if (record?.pending) throw Error('Check the previous submission first');
-    if (action === 'deploy' && record?.address) throw Error('This wallet already has a Preview token contract');
-    const urls = connectionUrls(store.network, await endpointsFor(store.network));
-    const built = await self.mdwaPreviewContracts.preparePreviewContract({ run, kind, wallet:w, state:s, urls, action, amount:String(amount), address:record?.address }).catch(error => {
-      if (error?.cause?.message) throw Error(error.message + ' (' + error.cause.message + ')');
-      throw error;
-    });
-    try {
-      const fee = midnight.recipeTransactions(built.recipe).reduce((sum, tx) => sum + BigInt(midnight.describeLedgerTransaction(tx, s).fee), 0n).toString();
-      const shown = { contractKind:kind, action, amount:String(amount), address:built.address, tokenType:built.tokenType, fee };
-      const id = keepPreview({ kind:'contract', network:store.network, wallet:w, recordName, ...built, ...shown });
-      return { id, ...shown };
-    } catch (error) { await w.facade.revert(built.recipe, 'cancelled'); throw error; }
-  }),
-  submitTokenAction: async ({ id }) => withBusy('contract', 'signing', async stage => {
-    const p = takePreview(id, 'contract');
-    const previous = await readRecord(p.recordName);
-    if (previous?.pending || (p.action === 'deploy' && previous?.address)) {
-      await p.wallet.facade.revert(p.recipe, 'cancelled');
-      throw Error('Check the existing contract action first');
-    }
-    const finalized = await midnight.sealRecipe(p.wallet, p.recipe, { onStage:stage });
-    const ledgerTx = midnight.ledgerTransaction(finalized);
-    globalThis.mdwaProgress?.bind(ledgerTx);
-    const ids = ledgerTx.identifiers();
-    const last = { action:p.action, id:ids[0], hash:midnight.ledgerTransaction(finalized).transactionHash(), amount:p.amount, tokenType:p.tokenType };
-    const record = { ...previous, address:p.address, last };
-    if (p.signingKey) record.signingKey = p.signingKey;
-    record.pending = { signed:vault.toHex(finalized.serialize()), previous:previous?.last, fee:p.fee, created:Date.now() };
-    await writeRecord(p.network, p.recordName, record);
-    stage('submitting');
-    globalThis.mdwaProgress?.stage('Submitting');
-    const txId = await p.wallet.facade.submitTransaction(finalized);
-    delete record.pending;
-    await writeRecord(p.network, p.recordName, record);
-    await noteTransaction(p.network, [...ids, txId], { kind:'dapp', action:p.action, fee:p.fee, origin:null });
-    return { txId, address:p.address, tokenType:p.tokenType };
-  }),
-  recoverTokenAction: async ({ kind = 'token' }) => withBusy('contract', 'checking', async stage => {
-    const { wallet:w } = await synced();
-    const name = contractRecord(kind);
-    const record = await readRecord(name);
-    if (!record?.pending) return {};
-    const network = store.network;
-    const urls = connectionUrls(network, await endpointsFor(network));
-    const response = await fetch(urls.indexerHttp, {
-      method:'POST', headers:{ 'content-type':'application/json' }, signal:AbortSignal.timeout(12000),
-      body:JSON.stringify({ query:'query($h: HexEncoded!){ block { timestamp } transactions(offset:{hash:$h}) { hash ... on RegularTransaction { transactionResult { status } } } }', variables:{ h:record.last.hash } }),
-    });
-    const body = await response.json();
-    if (!response.ok || body.errors || !body.data?.block) throw Error('The indexer could not check this submission');
-    const match = body.data.transactions.find(tx => tx.hash === record.last.hash);
-    const timestamp = Number(body.data.block.timestamp);
-    if (match && !['SUCCESS','FAILURE'].includes(match.transactionResult?.status)) {
-      throw Error('Check the contract result in Activity before starting another action');
-    }
-    const rejected = match?.transactionResult?.status === 'FAILURE';
-    if (rejected || (!match && timestamp > record.pending.created + 35 * 60 * 1000)) {
-      if (record.last.action === 'deploy') await store.delete(name);
-      else {
-        record.last = record.pending.previous;
-        delete record.pending;
-        await writeRecord(network, name, record);
-      }
-      return { message:'This contract action did not complete. You can review a new one.' };
-    }
-    if (!match) {
-      stage('submitting');
-      const signed = w.facade.adoptTransaction(vault.fromHex(record.pending.signed), 'Finalized');
-      await w.facade.submitTransaction(signed);
-    }
-    const fee = record.pending.fee;
-    delete record.pending;
-    await writeRecord(network, name, record);
-    await noteTransaction(network, [record.last.hash, record.last.id], { kind:'dapp', action:record.last.action, fee, origin:null });
-    return { message:'Submission located. Check Activity for confirmation.' };
-  }),
   checkAddress: async ({ address }) => midnight.checkAddress(net().networkId, address),
   previewSend: async ({ outputs }) => {
     const { wallet: w } = await synced();

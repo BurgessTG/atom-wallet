@@ -25,13 +25,8 @@ var pending := {}
 var seq := 0
 var refreshing := false
 var refresh_again := false
-var token_contract := {}
-var contract_kind := "token"
-var known_types := {}
-var mint_amount := "1"
 var label_asset := {}
 var busy := false
-var demo := false
 var page := "welcome"
 var words := PackedStringArray()
 var receive_kind := "unshielded"
@@ -44,7 +39,6 @@ var token_labels := {}
 var last_tx := ""
 var receipt := {}
 var boot_error := ""
-var proof_status := ""
 var android_edges := []
 var trace := {}
 var trace_origin := "home"
@@ -126,15 +120,14 @@ const CHAINS := [
 	["preprod", "Preprod", "Test network that mirrors Mainnet"],
 	["mainnet", "Mainnet", "Real NIGHT and DUST"],
 ]
-const LOCAL_APP := "https://mdwa.local/"
 const DRAWERS := ["send", "receive", "choose_token", "review", "preparing"]
 const TABS := ["home", "activity", "explore"]
 const SETTINGS_PAGES := ["settings", "network", "connections", "proving", "rescan", "remove"]
 const DEPTH := {
 	"welcome": 0, "unlock": 0, "restore": 1, "phrase": 1, "verify": 2, "create": 3,
 	"home": 0, "activity": 0, "explore": 0, "settings": 0,
-	"detail": 1, "dust": 1, "token_label": 1, "browser": 1, "chain": 2, "contracts": 2,
-	"dust_review": 2, "contract_review": 3, "working": 2, "sent": 3,
+	"detail": 1, "dust": 1, "token_label": 1, "browser": 1, "chain": 2,
+	"dust_review": 2, "working": 2, "sent": 3,
 	"network": 1, "connections": 2, "proving": 1, "rescan": 1, "remove": 1,
 }
 
@@ -180,7 +173,7 @@ func save_pref(key: String, value) -> void:
 
 # Calls the Android plugin, or a test double that implements the same method.
 func native(method: String, args := []):
-	if not bridge or demo and method in ["unlockWithBiometric"]: return null
+	if not bridge: return null
 	if Engine.has_singleton("WalletEngine") and bridge == Engine.get_singleton("WalletEngine"): return bridge.callv(method, args)
 	if bridge.has_method(method): return bridge.callv(method, args)
 	return null
@@ -200,12 +193,12 @@ func margin(side: String) -> int:
 	return frame.get_theme_constant("margin_" + side) if is_instance_valid(frame) else 0
 
 func authed() -> bool:
-	return demo or (live_state.get("hasWallet", false) and not live_state.get("locked", true))
+	return live_state.get("hasWallet", false) and not live_state.get("locked", true)
 
 # ---------------------------------------------------------------- bridge ---
 
 func ask(method: String, params: Dictionary, done: Callable) -> void:
-	if not bridge or demo: return
+	if not bridge: return
 	seq += 1
 	pending[str(seq)] = done
 	bridge.request(JSON.stringify({"id": str(seq), "method": method, "params": params}))
@@ -247,8 +240,6 @@ func _message(raw: String) -> void:
 				browser_error = str(msg.get("error", ""))
 				if is_instance_valid(browser_location): browser_location.text = url_label(explorer_url)
 				notice(browser_error)
-		"exploreAction":
-			if page == "browser" and msg.get("kind") in ["token", "counter"]: open_contract(msg.kind)
 		"scan":
 			if msg.get("value"): use_scanned(str(msg.value))
 			elif msg.get("error"): show_toast(str(msg.error))
@@ -275,7 +266,7 @@ func _message(raw: String) -> void:
 			if focus is LineEdit and is_instance_valid(scroll) and scroll.is_ancestor_of(focus):
 				scroll.ensure_control_visible.call_deferred(focus)
 		"slow":
-			if live_state.is_empty() and not demo:
+			if live_state.is_empty():
 				boot_error = msg.message
 				draw_page()
 		"closed", "fatal":
@@ -285,9 +276,7 @@ func _message(raw: String) -> void:
 			live_state.clear()
 			boot_error = msg.get("message", "")
 			bio_prompted = false
-			if demo and msg.type == "fatal": return
 			wipe()
-			demo = false
 			go("welcome")
 		"state":
 			var first := live_state.is_empty()
@@ -300,7 +289,6 @@ func _message(raw: String) -> void:
 			var previous_sync = live_state.get("sync", {}).get("status")
 			live_state = msg.state
 			boot_error = ""
-			if demo: return
 			if first or previous_network != network(): refresh_biometric()
 			if first or had != live_state.hasWallet or locked != live_state.locked or previous_network != network():
 				var keep_settings: bool = previous_network != network() and page in SETTINGS_PAGES and not first
@@ -317,13 +305,6 @@ func _message(raw: String) -> void:
 								token_labels[item.kind + ":" + item.type] = item
 							if not token_labels.is_empty() and page in ["home", "send", "choose_token", "activity"]: redraw_at_scroll()
 					)
-					if network() == "preview":
-						ask("previewTokenContract", {"kind": "token"}, func(reply):
-							var types = reply.get("result", {}).get("types") if reply.get("result") is Dictionary else null
-							if types is Dictionary:
-								known_types = types
-								if page in ["home", "send", "choose_token"]: redraw_at_scroll()
-						)
 			elif page == "receive" and previous_addresses != live_state.get("addresses"):
 				draw_page()
 			else:
@@ -345,11 +326,6 @@ func _message(raw: String) -> void:
 			callback.call(msg)
 
 func wipe() -> void:
-	proof_status = ""
-	token_contract.clear()
-	known_types.clear()
-	contract_kind = "token"
-	mint_amount = "1"
 	label_asset.clear()
 	words.clear()
 	phrase_revealed = false
@@ -385,10 +361,10 @@ func wipe() -> void:
 func go(target: String, transition := "auto") -> void:
 	if DisplayServer.has_feature(DisplayServer.FEATURE_VIRTUAL_KEYBOARD):
 		DisplayServer.virtual_keyboard_hide()
-	if page in ["review", "dust_review", "contract_review"] and target != "sent" and preview.has("id") and not demo:
+	if page in ["review", "dust_review"] and target != "sent" and preview.has("id"):
 		ask("cancel", {"id": preview.id}, func(_reply): pass)
 	if target not in ["sent", "browser", "chain"]: receipt = {}
-	if target not in ["review", "dust_review", "contract_review"]: preview = {}
+	if target not in ["review", "dust_review"]: preview = {}
 	if target in ["welcome", "unlock"]:
 		recipient = ""; amount = ""
 		send_kind = "unshielded"; token_type = M.NIGHT_TYPE
@@ -434,23 +410,18 @@ func back() -> void:
 			go("settings" if authed() else ("unlock" if live_state.get("hasWallet") else "welcome"))
 		"connections": go("network")
 		"settings": go(settings_return)
-		"contracts": go("browser" if explorer_url.begins_with(LOCAL_APP) else "explore")
 		"browser":
 			if native_explorer() and bridge.explorerBack(): return
 			go(browser_return)
 		"working": go(trace_origin)
 		"sent": go("home")
 		"dust_review": go("dust")
-		"contract_review": go("contracts")
 		"detail": go(history_origin)
 		"chain": go(chain_origin)
 		"verify": go("phrase")
 		"create": go("verify")
 		"restore", "phrase": go("welcome")
-		"welcome", "unlock": get_tree().quit()
-		"home":
-			if demo: exit_demo()
-			else: get_tree().quit()
+		"welcome", "unlock", "home": get_tree().quit()
 		_: go("home")
 
 func _notification(what: int) -> void:
@@ -489,7 +460,6 @@ func hide_toast_if(kind: String) -> void:
 		toast_panel.hide()
 
 func sync_text() -> String:
-	if demo: return "Sample balances"
 	var sync: Dictionary = live_state.get("sync", {})
 	if overview.get("cachedAt") and sync.get("status") != "synced": return "Saved balance · syncing"
 	match sync.get("status", "idle"):
@@ -501,7 +471,6 @@ func sync_text() -> String:
 	return str(sync.get("error") if sync.get("error") else "Connecting to " + chain_name() + "…")
 
 func sync_tone() -> Color:
-	if demo: return D.ACCENT
 	match live_state.get("sync", {}).get("status", "idle"):
 		"synced": return D.MINT
 		"error": return D.DANGER
@@ -513,7 +482,7 @@ func group_digits(digits: String) -> String:
 # --------------------------------------------------------------- refresh ---
 
 func refresh() -> void:
-	if demo or not bridge: return
+	if not bridge: return
 	if page in SETTINGS_PAGES:
 		if config.is_empty() and not refreshing:
 			refreshing = true
@@ -533,30 +502,23 @@ func refresh() -> void:
 	if refreshing:
 		refresh_again = true
 		return
-	if busy or page not in ["home", "dust", "activity", "send", "contracts", "detail", "choose_token", "sent", "receive"]: return
+	if busy or page not in ["home", "dust", "activity", "send", "detail", "choose_token", "sent", "receive"]: return
 	var target := page
 	var limit := history_limit
 	refreshing = true
-	var method: String = {"home": "walletHome", "activity": "history", "contracts": "previewTokenContract", "detail": "activityItem", "sent": "activityItem"}.get(target, "overview")
+	var method: String = {"home": "walletHome", "activity": "history", "detail": "activityItem", "sent": "activityItem"}.get(target, "overview")
 	var params := {"offset": 0, "limit": limit} if method == "history" else ({"hash": last_tx if target == "sent" else detail.get("hash", "")} if method == "activityItem" else {})
-	var selected_kind := contract_kind
 	if target == "sent" and last_tx.is_empty(): refreshing = false; return
-	if target == "contracts": params = {"kind": selected_kind}
 	ask(method, params, func(reply):
 		refreshing = false
 		if refresh_again:
 			refresh_again = false
 			refresh.call_deferred()
-		if page != target or demo or busy or history_limit != limit or (target == "contracts" and selected_kind != contract_kind): return
+		if page != target or busy or history_limit != limit: return
 		if reply.has("error"):
-			if target in ["activity", "contracts"] or overview.is_empty(): notice(reply.error.message)
+			if target == "activity" or overview.is_empty(): notice(reply.error.message)
 			return
-		if target == "contracts":
-			if token_contract != reply.result:
-				token_contract = reply.result
-				if token_contract.get("types") is Dictionary: known_types = token_contract.types
-				redraw_at_scroll()
-		elif target == "sent":
+		if target == "sent":
 			if reply.result is Dictionary and receipt != reply.result:
 				receipt = reply.result; redraw_at_scroll()
 		elif target == "detail":
@@ -605,22 +567,6 @@ func redraw_at_scroll() -> void:
 	var offset := scroll.scroll_vertical if is_instance_valid(scroll) else 0
 	draw_page("none")
 	if is_instance_valid(scroll): scroll.set_deferred("scroll_vertical", offset)
-
-func enter_demo() -> void:
-	if busy: return
-	demo = true
-	wipe()
-	overview = M.SAMPLE.duplicate(true)
-	history = M.HISTORY.duplicate(true)
-	recent = history.slice(0, 3)
-	history_total = history.size()
-	history_loaded = true
-	go("home", "push")
-
-func exit_demo() -> void:
-	demo = false
-	wipe()
-	go("unlock" if live_state.get("hasWallet") else "welcome", "pop")
 
 # ----------------------------------------------------------------- shell ---
 
@@ -765,7 +711,7 @@ func build_tabbar(parent: Control) -> void:
 func selected_tab() -> String:
 	var main_page: String = drawer_owner if page in DRAWERS else page
 	if main_page in SETTINGS_PAGES: return "settings"
-	return {"contracts": "explore", "browser": "explore", "chain": "explore", "dust": "home", "dust_review": "home", "token_label": "home", "detail": history_origin, "working": trace_origin, "sent": "home"}.get(main_page, main_page)
+	return {"browser": "explore", "chain": "explore", "dust": "home", "dust_review": "home", "token_label": "home", "detail": history_origin, "working": trace_origin, "sent": "home"}.get(main_page, main_page)
 
 func place_tab_thumb(animated: bool) -> void:
 	if not is_instance_valid(tabbar) or tab_buttons.is_empty(): return
@@ -839,9 +785,9 @@ func network_chip(parent: Control) -> Button:
 	dot.add_theme_stylebox_override("panel", D.style(sync_tone(), 4))
 	dot.name = "Dot"
 	h.add_child(dot)
-	D.label(h, "Demo" if demo else chain_name(), 12, D.MUTED, 620)
+	D.label(h, chain_name(), 12, D.MUTED, 620)
 	b.custom_minimum_size.x = h.get_combined_minimum_size().x + 22
-	b.disabled = demo or busy or page in ["working", "sent"]
+	b.disabled = busy or page in ["working", "sent"]
 	b.pressed.connect(func(): D.buzz("tick"); navigate("network"))
 	return b
 
@@ -920,7 +866,6 @@ func build_main(main_page: String, transition: String) -> void:
 		"working", "sent": progress_page()
 		"explore": explore_page()
 		"browser": browser_page(stage)
-		"contracts", "contract_review": contracts_page()
 		"token_label": label_page()
 		"settings": settings_page()
 		"network": network_page()
@@ -1237,7 +1182,6 @@ func welcome() -> void:
 		D.button(parent, "I already have a wallet", func(): restore_text = ""; go("restore"), "secondary", "key")
 		var other := D.row(parent, 8)
 		D.chip(other, chain_name(), func(): navigate("network"), false, "chain")
-	D.button(parent, "Try the demo", enter_demo, "ghost", "next")
 
 func biometric_unlock() -> void:
 	if busy or page != "unlock": return
@@ -1454,7 +1398,7 @@ func home_summary(parent: Control) -> void:
 	status_line.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	status_line.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
 	status_line.clip_text = true
-	if not demo and str(live_state.get("sync", {}).get("error", "")).contains("Blockfrost"):
+	if str(live_state.get("sync", {}).get("error", "")).contains("Blockfrost"):
 		D.button(parent, "Add a Blockfrost project ID", func(): navigate("network"), "soft", "key")
 	var actions := GridContainer.new()
 	actions.columns = 3
@@ -1539,7 +1483,7 @@ func asset_row(parent: Control, item: Dictionary, action := Callable(), selected
 	var kind: String = item.kind
 	var asset := describe_asset(kind, item.type)
 	var night: bool = kind == "unshielded" and item.type == M.NIGHT_TYPE
-	if not action.is_valid() and not night and not demo:
+	if not action.is_valid() and not night:
 		action = func(): label_asset = {"kind": kind, "type": item.type}; go("token_label")
 	var r := D.list_row(parent, "Select " + asset.name if selected or action.is_valid() and page in DRAWERS else ("Edit token label" if not night else asset.name), action)
 	D.badge(r, "night" if night else ("shield" if kind == "shielded" else "contracts"), D.ACCENT)
@@ -1602,9 +1546,7 @@ func dust_page() -> void:
 		if not preview.canPay:
 			D.label(body, "More DUST is needed to pay this fee. Go back and check again once it has accumulated.", 14, D.MUTED, 480, true)
 			return
-		D.hold_button(body, "Hold to confirm", func():
-			if demo: go("dust"); show_toast("Demo review complete"); return
-			submit_review("dustApply"), "dust")
+		D.hold_button(body, "Hold to confirm", func(): submit_review("dustApply"), "dust")
 		return
 	heading("DUST", "Registered NIGHT generates the DUST that pays network fees.", true)
 	if overview.is_empty(): D.skeleton(body, 2); return
@@ -1632,13 +1574,7 @@ func dust_page() -> void:
 	for action in ["register", "deregister"]:
 		var key := "unregisteredNight" if action == "register" else "registeredNight"
 		if overview.dust[key] == "0": continue
-		D.button(side, "Register NIGHT" if action == "register" else "Stop generation", func():
-			if demo:
-				preview = {"action": action, "canPay": true, "fee": "250000000000000", "utxos": [{"ref": "Sample output", "amount": overview.dust[key]}]}
-				go("dust_review")
-				return
-			prepare_review("dustPreview", {"action": action}, "dust_review")
-		, "primary" if action == "register" else "secondary", "bolt" if action == "register" else "close")
+		D.button(side, "Register NIGHT" if action == "register" else "Stop generation", func(): prepare_review("dustPreview", {"action": action}, "dust_review"), "primary" if action == "register" else "secondary", "bolt" if action == "register" else "close")
 	var address := wallet_address("dust")
 	if not address.is_empty():
 		D.section(side, "DUST address")
@@ -1698,6 +1634,9 @@ func activity_list(parent: Control) -> void:
 	if history_total > history.size():
 		D.button(parent, "Show more", func(): history_limit += 30; refresh(), "secondary", "down")
 
+# Names for the contract transactions a wallet may already have in its history.
+const CONTRACT_TITLES := {"deploy": "Contract deployed", "increment": "Contract call", "mintShielded": "Private tokens minted", "mintUnshielded": "Public tokens minted"}
+
 func day_label(tx: Dictionary) -> String:
 	if tx.get("time") == null:
 		return "Pending" if str(tx.get("status", "")) in ["pending", "offered"] else "Earlier"
@@ -1711,7 +1650,7 @@ func day_label(tx: Dictionary) -> String:
 	return "%s %d" % [["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][d.month - 1], d.day]
 
 func tx_title(tx: Dictionary) -> String:
-	if tx.get("kind") == "dapp": return contract_title(tx.get("action", "Contract transaction"))
+	if tx.get("kind") == "dapp": return CONTRACT_TITLES.get(tx.get("action", ""), "Contract transaction")
 	return {"receive": "Received", "send": "Sent", "dust": "DUST generation started" if tx.get("action") != "deregister" else "DUST generation stopped"}.get(tx.get("kind", ""), "Transaction")
 
 func detail_page() -> void:
@@ -1737,7 +1676,7 @@ func detail_content(parent: Control) -> void:
 	if detail.get("block") != null: kv(rows, "Block", group_digits(str(int(detail.block))))
 	if detail.get("time"):
 		kv(rows, "Time", Time.get_datetime_string_from_unix_time(int(detail.time / 1000.0) + int(Time.get_time_zone_from_system().get("bias", 0)) * 60, true))
-	kv(rows, "Chain", "Demo" if demo else chain_name())
+	kv(rows, "Chain", chain_name())
 	for change in detail.get("deltas", []):
 		if change.kind == "shielded" or (change.kind == "unshielded" and change.type != M.NIGHT_TYPE):
 			kv(rows, "Token", middle(change.type, 8), true)
@@ -1757,7 +1696,7 @@ func detail_content(parent: Control) -> void:
 		body = parent
 		timeline(detail.timeline)
 		body = saved
-	if not demo and hash.length() == 64 and hash.is_valid_hex_number(false):
+	if hash.length() == 64 and hash.is_valid_hex_number(false):
 		D.button(parent, "View on explorer", open_browser.bind(explorer_tx(hash), "detail" if page == "detail" else "activity"), "secondary", "globe")
 		if prefs.developer: D.button(parent, "On-chain receipt", open_receipt.bind(hash, "detail"), "ghost", "check")
 
@@ -1774,9 +1713,6 @@ func receive_page() -> void:
 	heading("Receive")
 	if receive_kind == "dust": receive_kind = "unshielded"
 	D.segmented(body, [["shielded", "Private", "Shielded tokens"], ["unshielded", "Public", "NIGHT and public tokens"]], receive_kind, func(kind): receive_kind = kind; draw_page())
-	if demo:
-		D.label(body, "Demo addresses can't receive funds. Open a wallet to show its address and QR code.", 14, D.MUTED, 480, true)
-		return
 	var address := wallet_address(receive_kind)
 	if address.is_empty():
 		D.skeleton(body, 1)
@@ -1855,15 +1791,13 @@ func send_page() -> void:
 		var rows := D.card(body, D.SURFACE, 18, 6, 0)
 		kv(rows, "Network fee", M.units(str(preview.fee), 15) + " DUST")
 		kv(rows, "Transfer", "Private" if output.kind == "shielded" else "Public")
-		kv(rows, "Chain", "Demo" if demo else chain_name())
+		kv(rows, "Chain", chain_name())
 		if output.kind == "shielded" or output.type != M.NIGHT_TYPE: kv(rows, "Token", middle(output.type, 8), true)
-		if network() == "mainnet" and not demo:
+		if network() == "mainnet":
 			var w := D.row(body, 8)
 			D.icon(w, "info", D.AMBER, 16)
 			D.label(w, "Mainnet transfers are final and use real NIGHT.", 13, D.AMBER, 560, true).size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		D.hold_button(body, "Hold to send", func():
-			if demo: go("sent"); return
-			submit_review("send"))
+		D.hold_button(body, "Hold to send", func(): submit_review("send"))
 		return
 	if page == "choose_token":
 		heading("Choose an asset", "", true)
@@ -1920,15 +1854,7 @@ func send_page() -> void:
 		if text.is_empty(): show_toast("Clipboard is empty"); return
 		recipient = text; address_field.text = text; check_kind.call(text)
 	, false, "copy")
-	if not demo: D.chip(shortcuts, "Scan", scan_qr, false, "scan")
-	var own_address := wallet_address(send_kind)
-	if not own_address.is_empty() and not demo:
-		D.chip(shortcuts, "My address", func(): recipient = own_address; address_field.text = recipient; check_kind.call(recipient))
-	if demo:
-		D.chip(shortcuts, "Use sample transfer", func():
-			recipient = "Demo recipient"; amount = "1" if send_kind == "shielded" else "12.50"
-			draw_page()
-		)
+	D.chip(shortcuts, "Scan", scan_qr, false, "scan")
 	D.caption(body, "Amount")
 	var amount_box := D.panel(body, D.SURFACE, 20)
 	var ar := D.row(D.inset(amount_box, 18, 8), 8)
@@ -1966,10 +1892,6 @@ func send_page() -> void:
 		if M.exceeds(atomic, coin.amount):
 			notice("This is more than your available balance."); return
 		var outputs := [{"recipient": recipient, "kind": send_kind, "type": token_type, "amount": atomic}]
-		if demo:
-			if recipient != "Demo recipient": notice("Use the sample transfer in the demo."); return
-			preview = {"outputs": outputs, "fee": "250000000000000"}
-			go("review"); return
 		prepare_review("previewSend", {"outputs": outputs}, "review")
 	, "primary", "next")
 
@@ -1988,7 +1910,6 @@ func use_scanned(value: String) -> void:
 	else: go("send")
 
 func scan_qr() -> void:
-	if demo: show_toast("Scanning works in a real wallet"); return
 	if native("scanQr", []) == null and not Engine.has_singleton("WalletEngine"):
 		show_toast("The QR scanner needs the Android app")
 
@@ -2002,11 +1923,7 @@ func describe_asset(kind: String, type: String) -> Dictionary:
 		return {"name": "DUST", "unit": "DUST", "decimals": 15}
 	if kind == "unshielded" and type == M.NIGHT_TYPE:
 		return {"name": "Midnight", "unit": "NIGHT", "decimals": 6}
-	if demo and type == M.DEMO_TYPE:
-		return {"name": "Demo token", "unit": "DEMO", "decimals": 0}
 	var metadata: Dictionary = token_labels.get(kind + ":" + type, {})
-	if metadata.is_empty() and known_types.get(kind) == type:
-		return {"name": "Test token", "unit": "sTEST" if kind == "shielded" else "uTEST", "decimals": 0}
 	var name_: String = metadata.get("name", "")
 	if name_.is_empty(): name_ = "Token " + type.left(4) + "…" + type.right(4)
 	var symbol: String = metadata.get("symbol", "")
@@ -2039,76 +1956,6 @@ func label_page() -> void:
 			go("home")
 		)
 	, "primary", "check")
-
-# ------------------------------------------------------------- contracts ---
-
-func contracts_page() -> void:
-	if page == "contract_review":
-		heading("Confirm contract action", "", true)
-		var summary := D.card(body, D.SURFACE, 18, 6, 0)
-		kv(summary, "Action", contract_title(preview.action))
-		kv(summary, "Chain", chain_name())
-		kv(summary, "Contract", middle(str(preview.address), 8), true)
-		kv(summary, "Network fee", M.units(preview.fee, 15) + " DUST")
-		if preview.action in ["mintShielded", "mintUnshielded"]:
-			kv(summary, "Mint", preview.amount + " to your " + ("private" if preview.action == "mintShielded" else "public") + " address")
-		D.hold_button(body, "Hold to confirm", func(): submit_review("submitTokenAction"), "contracts")
-		return
-	heading("Token contract" if contract_kind == "token" else "Counter contract", "mdwa.local test dApp", true)
-	D.segmented(body, [["token", "Token"], ["counter", "Counter"]], contract_kind, func(kind):
-		if busy or contract_kind == kind: return
-		contract_kind = kind; token_contract = {}; go("contracts", "fade"))
-	var panel := D.card(body, D.SURFACE, 18, 16, 8)
-	D.label(panel, "Test token" if contract_kind == "token" else "Public counter", 18, D.INK, 680, true)
-	if demo:
-		D.label(panel, "Open a Preview wallet to deploy and mint tokens.", 14, D.MUTED, 480, true)
-		return
-	if token_contract.is_empty():
-		D.label(panel, "Loading contract…", 14, D.MUTED, 500)
-		return
-	if not token_contract.get("address"):
-		D.label(panel, "Deploy once to mint private and public test tokens to this wallet." if contract_kind == "token" else "Deploy a counter that anyone can read or increment on Preview.", 14, D.MUTED, 480, true)
-		D.button(body, "Deploy contract", prepare_contract.bind("deploy"), "primary", "contracts")
-		return
-	var ar := D.row(panel, 8)
-	var addr := D.label(ar, middle(token_contract.address, 10), 13, D.MUTED, 520)
-	addr.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	addr.clip_text = true
-	addr.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
-	D.chip(ar, "Copy", func(): copy(token_contract.address, "Contract address copied"), false, "copy")
-	if token_contract.get("pending"):
-		D.label(panel, "Confirmation is pending after an interrupted submission.", 14, D.AMBER, 520, true)
-		D.button(panel, "Check submission", func():
-			command("recoverTokenAction", {"kind": contract_kind}, func(result):
-				refresh(); show_toast(result.get("message", "Submission checked"))
-			, "Checking the indexer…")
-		, "primary", "refresh")
-		return
-	if token_contract.get("value") is Dictionary and token_contract.value.has("error"):
-		D.label(panel, token_contract.value.error, 14, D.MUTED, 480, true)
-	elif token_contract.get("value") is Dictionary:
-		kv(panel, "Mints" if contract_kind == "token" else "Count", str(token_contract.value.count))
-		kv(panel, "At block", group_digits(str(int(token_contract.value.block))))
-	if contract_kind == "counter":
-		D.button(body, "Increment counter", prepare_contract.bind("increment"), "primary", "plus")
-		return
-	D.caption(body, "Amount to mint")
-	var quantity := D.field(body, "Whole tokens")
-	quantity.virtual_keyboard_type = LineEdit.KEYBOARD_TYPE_NUMBER
-	quantity.text = mint_amount
-	quantity.text_changed.connect(func(value): mint_amount = value)
-	var acts := D.row(body, 10)
-	D.button(acts, "Mint private", prepare_contract.bind("mintShielded"), "primary", "shield")
-	D.button(acts, "Mint public", prepare_contract.bind("mintUnshielded"), "secondary", "receive")
-
-func contract_title(action: String) -> String:
-	return {"deploy": "Deploy contract", "increment": "Increment counter", "mintShielded": "Mint private tokens", "mintUnshielded": "Mint public tokens"}.get(action, action)
-
-func prepare_contract(action: String) -> void:
-	var quantity := M.atomic_amount(mint_amount, 0) if action in ["mintShielded", "mintUnshielded"] else "1"
-	if quantity.is_empty():
-		notice("Enter a positive whole number."); return
-	prepare_review("prepareTokenAction", {"kind": contract_kind, "action": action, "amount": quantity}, "contract_review")
 
 # ---------------------------------------------------------- transactions ---
 
@@ -2203,15 +2050,6 @@ func timeline(record: Dictionary, awaiting := false) -> void:
 			duration_label(sub, proof.start, proof.get("end"), 12, D.MUTED)
 
 func progress_page() -> void:
-	if demo:
-		var c := CenterContainer.new(); c.custom_minimum_size.y = 180; body.add_child(c)
-		var done_ring := D.Ring.new(110); done_ring.value = 1.0; done_ring.tint = D.MINT; done_ring.width = 7; c.add_child(done_ring)
-		var okc := CenterContainer.new(); done_ring.add_child(okc); okc.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-		D.icon(okc, "check", D.MINT, 44)
-		D.label(body, "Demo complete", 26, D.INK, 720).horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-		D.label(body, "A real transfer proves privately on this phone, then finalizes on Midnight.", 14, D.MUTED, 480, true).horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-		D.button(body, "Back to wallet", navigate.bind("home"), "primary")
-		return
 	var failed: bool = trace.get("status") == "error"
 	var status := str(trace.get("status", ""))
 	var finished := status in ["finalized", "complete"] or str(receipt.get("status", "")) == "finalized"
@@ -2287,24 +2125,16 @@ func DANGER_TEXT() -> Color:
 func explore_page() -> void:
 	heading("Explore")
 	var group := D.list(body)
-	explore_link(group, "globe", "Block explorer", ("Midnight " + chain_name()) if not demo else "Midnight explorer", open_browser.bind(EXPLORERS.get(network(), EXPLORERS.preview), "explore"))
-	if FAUCETS.has(network()) and not demo:
+	explore_link(group, "globe", "Block explorer", "Midnight " + chain_name(), open_browser.bind(EXPLORERS.get(network(), EXPLORERS.preview), "explore"))
+	if FAUCETS.has(network()):
 		explore_link(group, "faucet", "Get test NIGHT", "Faucet for " + chain_name() + " · copies your address", func():
 			var address := wallet_address("unshielded")
 			if address: DisplayServer.clipboard_set(address); show_toast("Address copied. Paste it in the faucet.")
 			open_browser(FAUCETS[network()], "explore"))
-	D.section(body, "Developer tools", "On" if prefs.developer else "")
-	if not prefs.developer:
-		var hint := D.card(body, D.SURFACE, 16, 14, 8)
-		D.label(hint, "Turn on Developer mode in Settings for the test dApp, contract playground and transaction lookup.", 14, D.MUTED, 480, true)
-		D.chip(hint, "Open Settings", func(): navigate("settings"), false, "gear")
-		return
-	var dev := D.list(body)
-	if network() == "preview":
-		explore_link(dev, "contracts", "mdwa test dApp", "Deploy, mint and count on Preview", open_browser.bind(LOCAL_APP, "explore"))
-	if not demo: explore_link(dev, "search_tx" if false else "activity", "Find transaction", "Look up a receipt by hash", open_receipt.bind("", "explore"))
-	if network() != "preview":
-		D.label(body, "The test dApp runs on Preview only.", 13, D.MUTED, 500, true)
+	if prefs.developer:
+		D.section(body, "Developer tools")
+		var dev := D.list(body)
+		explore_link(dev, "activity", "Find transaction", "Look up a receipt by hash", open_receipt.bind("", "explore"))
 
 func explore_link(group: Control, symbol: String, title: String, subtitle: String, action: Callable) -> void:
 	var r := D.list_row(group, title, action)
@@ -2354,10 +2184,6 @@ func chain_page() -> void:
 	D.button(acts, "Copy hash", func(): copy(chain_hash, "Hash copied"), "secondary", "copy")
 	D.button(acts, "Explorer", open_browser.bind(explorer_tx(chain_hash), "chain"), "secondary", "globe")
 
-func open_contract(kind: String) -> void:
-	if busy: return
-	contract_kind = kind; token_contract = {}; go("contracts")
-
 func open_browser(url: String, origin: String) -> void:
 	if busy: return
 	browser_return = origin
@@ -2371,7 +2197,7 @@ func native_explorer() -> bool:
 	return bridge != null and Engine.has_singleton("WalletEngine")
 
 func browser_page(host: Control) -> void:
-	var native_ := native_explorer() and not demo
+	var native_ := native_explorer()
 	var bar := D.row(body, 6)
 	D.button(bar, "Back to wallet screen", func(): go(browser_return), "ghost", "back", true).size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
 	var pillbox := D.panel(bar, Color(1, 1, 1, 0.05), 99, D.LINE)
@@ -2392,11 +2218,6 @@ func browser_page(host: Control) -> void:
 		browser_bounds.resized.connect(place_browser.call_deferred)
 		main_scroll.tree_exiting.connect(func(): if is_instance_valid(browser_bounds): browser_bounds.queue_free())
 		place_browser.call_deferred()
-	elif explorer_url.begins_with(LOCAL_APP):
-		heading("mdwa test dApp")
-		var group := D.list(body)
-		explore_link(group, "shield", "Token contract", "Deploy and mint test tokens", open_contract.bind("token"))
-		explore_link(group, "contracts", "Counter contract", "Deploy and increment a counter", open_contract.bind("counter"))
 	else:
 		D.button(body, "Open in browser", func(): OS.shell_open(explorer_url), "secondary", "globe")
 
@@ -2431,51 +2252,47 @@ func settings_page() -> void:
 	var prover_kind: String = config.get("endpoints", {}).get(network(), {}).get("prover", {}).get("kind", "wasm")
 	D.label(left, "Network", 13, D.MUTED, 620)
 	var net := D.list(left)
-	link_row(net, "chain", "Chain", "Demo" if demo else chain_name(), navigate.bind("network"))
+	link_row(net, "chain", "Chain", chain_name(), navigate.bind("network"))
 	link_row(net, "cpu", "Proving", "Proof server" if prover_kind == "server" else "On this phone · Vulkan", navigate.bind("proving"))
-	if not demo:
-		D.label(left, "Security", 13, D.MUTED, 620)
-		var sec := D.list(left)
-		var available: bool = biometric.get("available", false)
-		toggle_row(sec, "finger", "Biometric unlock", "Fingerprint or face" if available else "Set up a fingerprint or face in Android settings", biometric.get("enabled", false), func(on):
-			if on: biometric_setup()
-			else:
-				native("disableBiometric", [network()])
-				refresh_biometric()
-				show_toast("Biometric unlock is off")
-		, available)
-		var lock_card := D.card(sec, Color.TRANSPARENT, 14, 12, 8)
-		lock_card.get_parent().get_parent().add_theme_stylebox_override("panel", StyleBoxEmpty.new())
-		D.divider(sec, 0)
-		sec.move_child(sec.get_child(-1), sec.get_child_count() - 2)
-		var lh := D.row(lock_card, 12)
-		D.badge(lh, "lock", D.ACCENT)
-		D.text_column(lh, "Auto-lock", "When Atom Wallet leaves the screen")
-		D.segmented(lock_card, [[0, "Immediately"], [60, "1 min"], [300, "5 min"]], int(prefs.auto_lock), func(v):
-			save_pref("auto_lock", int(v))
-			native("setAutoLock", [int(v)])
-			redraw_at_scroll())
-		D.divider(sec, 64)
-		link_row(sec, "lock", "Lock now", "", func(): command("lock", {}, func(_v): pass, "Locking…"))
+	D.label(left, "Security", 13, D.MUTED, 620)
+	var sec := D.list(left)
+	var available: bool = biometric.get("available", false)
+	toggle_row(sec, "finger", "Biometric unlock", "Fingerprint or face" if available else "Set up a fingerprint or face in Android settings", biometric.get("enabled", false), func(on):
+		if on: biometric_setup()
+		else:
+			native("disableBiometric", [network()])
+			refresh_biometric()
+			show_toast("Biometric unlock is off")
+	, available)
+	var lock_card := D.card(sec, Color.TRANSPARENT, 14, 12, 8)
+	lock_card.get_parent().get_parent().add_theme_stylebox_override("panel", StyleBoxEmpty.new())
+	D.divider(sec, 0)
+	sec.move_child(sec.get_child(-1), sec.get_child_count() - 2)
+	var lh := D.row(lock_card, 12)
+	D.badge(lh, "lock", D.ACCENT)
+	D.text_column(lh, "Auto-lock", "When Atom Wallet leaves the screen")
+	D.segmented(lock_card, [[0, "Immediately"], [60, "1 min"], [300, "5 min"]], int(prefs.auto_lock), func(v):
+		save_pref("auto_lock", int(v))
+		native("setAutoLock", [int(v)])
+		redraw_at_scroll())
+	D.divider(sec, 64)
+	link_row(sec, "lock", "Lock now", "", func(): command("lock", {}, func(_v): pass, "Locking…"))
 	D.label(right, "Display", 13, D.MUTED, 620)
 	var disp := D.list(right)
 	toggle_row(disp, "eyeoff", "Hide balances on open", "Tap the eye to show them", prefs.hide_balances, func(on): save_pref("hide_balances", on))
 	toggle_row(disp, "bolt", "Haptic feedback", "Ticks and confirmations", prefs.haptics, func(on): save_pref("haptics", on))
 	D.label(right, "Advanced", 13, D.MUTED, 620)
 	var adv := D.list(right)
-	toggle_row(adv, "code", "Developer mode", "Test dApp, receipts, proof timings", prefs.developer, func(on):
+	toggle_row(adv, "code", "Developer mode", "Transaction lookup and proof timings", prefs.developer, func(on):
 		save_pref("developer", on)
 		show_toast("Developer mode " + ("on" if on else "off")))
-	if not demo: link_row(adv, "refresh", "Rescan wallet", "Rebuild balances and history", navigate.bind("rescan"))
+	link_row(adv, "refresh", "Rescan wallet", "Rebuild balances and history", navigate.bind("rescan"))
 	D.label(right, "About", 13, D.MUTED, 620)
 	var about := D.list(right)
 	var ar := D.list_row(about, "About", Callable())
 	D.badge(ar, "atom", D.ACCENT)
 	D.text_column(ar, "Atom Wallet " + VERSION, "Midnight wallet SDK 2.0.1 · ledger 9")
-	if demo:
-		D.button(right, "Exit demo", exit_demo, "secondary", "back")
-	else:
-		D.button(right, "Remove wallet from this phone", navigate.bind("remove"), "danger", "trash")
+	D.button(right, "Remove wallet from this phone", navigate.bind("remove"), "danger", "trash")
 
 func biometric_setup() -> void:
 	# Turning biometrics on needs the password once, to seal it with a key
@@ -2507,7 +2324,7 @@ func network_page() -> void:
 		var selected := id == network()
 		var has: bool = known.get(id, {}).get("hasWallet", false)
 		var r := D.list_row(group, c[1], func():
-			if busy or selected or demo: return
+			if busy or selected: return
 			command("selectNetwork", {"network": id}, func(_r):
 				config = {}
 				show_toast("Switched to " + c[1])
@@ -2527,7 +2344,7 @@ func network_page() -> void:
 			config_draft["projectId"] = field.text.strip_edges()
 			save_config()
 		, "primary", "check")
-	if authed() and not demo:
+	if authed():
 		D.section(body, "Endpoints")
 		var eg := D.list(body)
 		link_row(eg, "globe", "Custom endpoints", "Node and indexer for " + chain_name(), navigate.bind("connections"))
@@ -2548,7 +2365,6 @@ func connections_page() -> void:
 
 func proving_page() -> void:
 	heading("Proving", "Zero-knowledge proofs for private transfers.", true)
-	if demo: D.label(body, "Open a wallet to change proving.", 14, D.MUTED, 480, true); return
 	if config_draft.is_empty(): D.skeleton(body, 1); return
 	var prover: Dictionary = config_draft.prover
 	D.segmented(body, [["wasm", "On this phone", "Private, Vulkan GPU"], ["server", "Proof server", "Faster on slow phones"]], prover.kind, func(kind): prover.kind = kind; redraw_at_scroll())
@@ -2560,14 +2376,9 @@ func proving_page() -> void:
 		server.text = prover.get("url", "")
 		server.text_changed.connect(func(v): prover.url = v.strip_edges())
 	D.button(body, "Save proving", save_config, "primary", "check")
-	if prefs.developer:
-		D.section(body, "Benchmark")
-		D.button(body, "Run local proof", test_local_prover, "secondary", "cpu")
-		if proof_status: D.label(body, proof_status, 14, D.MINT, 560, true)
 
 func rescan_page() -> void:
 	heading("Rescan", "Rebuild balances and activity from " + chain_name() + ".", true)
-	if demo: return
 	D.button(body, "Rescan wallet", rescan_wallet.bind(false), "secondary", "refresh")
 	if config.get("birthday"):
 		D.label(body, "A full rescan also looks for private funds from before this wallet's birthday. It takes longer.", 13, D.MUTED, 480, true)
@@ -2595,10 +2406,3 @@ func save_config() -> void:
 
 func rescan_wallet(from_start: bool) -> void:
 	command("rescan", {"fromStart": from_start}, func(_result): config = {}; show_toast("Rescanning"); go("home"))
-
-func test_local_prover() -> void:
-	command("checkAndroidProver", {}, func(result):
-		proof_status = "Proof verified in %.1f seconds." % result.seconds
-		D.buzz("success")
-		draw_page()
-	, "Generating and verifying a local proof…")

@@ -51,8 +51,6 @@ const common = {
 // root it resolves to /dist/proof-worker.js, which is where they are emitted.
 const workers = await build({
   ...common,
-  // Both compiled dApps must construct states from the worker's single ledger instance.
-  ...(android ? { alias:{ '@midnight-ntwrk/compact-runtime':path.join(modules, '@midnight-ntwrk/compact-runtime') } } : {}),
   entryPoints: {
     'engine-worker': android ? path.join(root, 'android/worker/engine-entry.js') : path.join(src, 'engine-worker.js'),
     'dist/proof-worker': path.join(proverClient, 'proof-worker.js'),
