@@ -2,29 +2,33 @@
 
 Atom Wallet is the Android client for Midnight Preview, Preprod and Mainnet; choose the chain in **Settings → Chain**. Preprod and Mainnet need a Blockfrost project ID. Godot draws the controls, text, QR codes and artwork through its mobile Vulkan renderer. The APK bundles the Midnight SDK worker and a native Rust prover. One private WebMessagePort connects the UI to the SDK in Android System WebView. A second carries proof requests to the native library. Android keeps up to 64 MiB of HTTP cache for the public proving files. The SDK verifies circuit keys and public parameters against its release hashes when loading them. Private proof inputs stay in the app when local proving is selected.
 
-<img src="../docs/screenshots/android-overview.png" alt="Android demo wallet showing assets, recent activity and wallet navigation" width="290">
+<img src="../docs/screenshots/android-overview.png" alt="Atom Wallet home screen with the NIGHT balance, DUST, assets and recent activity" width="290">
 
 ## Use the wallet
 
-The atom in the top left opens nothing; the chain chip next to it switches chains, the eye hides balances and the gear opens Settings. Folded phones get bottom tabs (Wallet, Activity, Explore) and bottom sheets; unfolded screens of 600 dp or more get a side rail, two-column screens and centred dialogs. Send, DUST and contract confirmations are press-and-hold. **Settings** holds biometric unlock (the password is sealed by an Android Keystore key that needs a strong biometric and is invalidated by new enrolments), auto-lock, hidden balances, haptics and **Developer mode**, which reveals the test dApp, receipt lookup, the prover benchmark and per-proof GPU timings. **Scan** reads a QR address or `midnight:` link with the Google Play services code scanner.
+The header shows the atom, the chain chip (tap it to switch chains), the eye that hides balances and the gear that opens Settings. Folded phones get bottom tabs (Wallet, Activity, Explore) and bottom sheets. Unfolded screens of 600 dp or more get a side rail, two-column screens and centred dialogs.
 
-The paragraphs below predate the redesign; button names have changed as described above.
+**Create a new wallet** generates a 24-word recovery phrase. Tap to reveal it, write it down, confirm three of its words and set a password. **I already have a wallet** restores from a 12 to 24-word phrase and scans shielded funds from the start of the chain. Each chain has its own wallet and password. The worker seals the seed with the password and keeps it in the app's IndexedDB storage.
 
-Choose **Create wallet** to generate a recovery phrase, record it in order and set a password. **Restore wallet** opens an existing Preview wallet from its phrase and starts its shielded scan at the beginning of the chain. The worker encrypts the vault in the app’s IndexedDB storage. Leaving the app closes the worker and locks the wallet. If you leave during submission, check Activity after unlocking before retrying.
+**Wallet** shows available NIGHT, shielded and unshielded assets, DUST generation and recent activity. **Send** takes one shielded or unshielded recipient per transfer: choose an asset, paste or scan an address, enter an amount and review the DUST fee. **Scan** reads a QR address or `midnight:` link with the Google Play services code scanner. **Receive** shows, copies and shares the private or public address with its QR code. Tap **DUST** to register NIGHT for generation or stop it. Tap a custom asset to give it a name, symbol and decimal places. Sends and DUST changes are confirmed by pressing and holding.
 
-The client shows available NIGHT, shielded and unshielded assets, DUST generation and transaction history. The QR icon opens **Receive**, which displays and copies the selected public, shielded or DUST generation address. The paper airplane opens **Send**, which supports one shielded or unshielded recipient per transfer. Select the address kind, choose a token held in that balance, and review the amount and DUST fee. A wallet with no shielded tokens can open **Receive shielded tokens** to share its QR code or address. Unlabelled tokens use whole base units. Tap **DUST** to manage generation and review its fee. Tap a custom asset to set its display name, symbol and decimal places. The Chrome extension also exposes other networks, multi-recipient sends and site connections.
+**Activity** groups transactions by day; open one for its amounts, block, hash, recorded step timings and a link to the block explorer. **Explore** opens the chain's block explorer in the app and, on Preview and Preprod, the faucet.
 
-**Explore → mdwa test dApp** opens the bundled Android site at `mdwa.local` with a Preview token contract and the example public counter. Deploy a contract, then mint shielded or unshielded tokens to your own wallet, or increment the counter. The review shows the action, contract and estimated DUST fee. Each instance has its own public state feed. The token's mint count and the counter's current value update from the indexer. Each deployment has distinct token types.
+**Settings** holds:
 
-The bottom icons open Wallet, Activity, Explore and Settings. Open an activity row to see its receipt. **On-chain receipt** reads execution and block height from the Preview indexer. **View on explorer** opens Night Scan in the app. Explore also accepts a public transaction hash and checks again on new finalized heads while its receipt awaits indexing. New transactions show elapsed time for review, individual local proofs and submission through finalization. Their recorded steps are available in Activity. The settings shield contains endpoint, proving, rescan and lock controls. After unlock, an encrypted saved balance can appear while the SDK catches up. The UI subscribes to wallet changes, contract state and finalized heads. Balancing a transaction still requires current wallet state.
+- **Chain** (Preview, Preprod or Mainnet, with the Blockfrost project ID and custom endpoints) and **Proving** (on the phone or through a proof server).
+- **Biometric unlock**: the password is sealed by an Android Keystore key that needs a strong biometric and is invalidated by new enrolments.
+- **Auto-lock** (at once, 1 minute or 5 minutes after leaving the app), **Change password** and **Lock now**.
+- **Hide balances**, **Haptic feedback**, **Rescan wallet** and **Remove wallet from this phone**.
+- **Developer mode**, which adds transaction lookup by hash under Explore and per-proof GPU timings to transaction steps.
 
-**Explore demo wallet** opens an offline sample with a transfer review and DUST registration walkthrough. Sample balances and confirmations exist only in that session.
+Leaving the app locks the wallet after the auto-lock delay. A transaction that is proving or submitting keeps the worker running in the background for up to three minutes so it can finish; the wallet locks as soon as it does. If Android stops the app during a submission, check Activity after unlocking before sending again.
+
+A forgotten password cannot be recovered. **Forgot password?** on the unlock screen erases that chain's wallet from the phone so it can be restored from its recovery phrase with a new password.
 
 ## Local proving
 
-Choose **Test local prover** on the welcome screen or under **Settings → Proving** in an unlocked wallet. The app generates a sample shielded output, proves it locally and checks it with the stock ledger-v9 verifier. Downloading uncached public circuit material requires internet. The displayed time includes that download and verification. The test uses no funds and sends no transaction.
-
-The native prover runs BLS12-381 scalar transforms and quotient division on Vulkan. A workgroup processes seven transform stages per dispatch and reuses public twiddle tables across calls. For large G1 multi-scalar multiplications (MSMs), the prover combines repeated coefficients, then splits each scalar into a low byte and 247 upper bits. Vulkan sums the low-byte buckets while the CPU computes the upper contribution on the same bases. The CPU combines both results, builds the witness, evaluates constraints and verifies the proof. The Android backend requires a hardware Vulkan compute adapter. The Apple implementation that informed this work is [Seungheon Oh’s Metal prover](https://github.com/SeungheonOh/midnight-zk/tree/3531dff44cc66c5c6afaa15d49bae3b207362b04/metal).
+The native prover runs BLS12-381 scalar transforms and quotient division on Vulkan. A workgroup processes seven transform stages per dispatch and reuses public twiddle tables across calls. For large G1 multi-scalar multiplications (MSMs), the prover combines repeated coefficients, then splits each scalar into a low byte and 247 upper bits. Vulkan sums the low-byte buckets while the CPU computes the upper contribution on the same bases. The CPU combines both results, builds the witness, evaluates constraints and verifies the proof. The Android backend requires a hardware Vulkan compute adapter. Downloading uncached public circuit material requires internet. The Apple implementation that informed this work is [Seungheon Oh’s Metal prover](https://github.com/SeungheonOh/midnight-zk/tree/3531dff44cc66c5c6afaa15d49bae3b207362b04/metal).
 
 ## Build and install
 
@@ -37,7 +41,7 @@ rustup target add aarch64-linux-android x86_64-linux-android
 adb install -r android/app/build/outputs/apk/debug/app-arm64-v8a-debug.apk
 ```
 
-The build generates separate arm64 phone and x86_64 emulator APKs. The app requires Android 9 or newer, Vulkan 1.1 or newer, and a current Android System WebView. The debug build uses the development machine’s Android debug signing key.
+The build generates separate arm64 phone and x86_64 emulator APKs. The app requires Android 9 or newer, Vulkan 1.1 or newer, and a current Android System WebView. The debug build uses the development machine’s Android debug signing key. Android only installs an update over an existing app when both are signed with the same key.
 
 ## Check the mobile client
 
@@ -50,7 +54,7 @@ node android/check-worker.mjs
 node android/check-worker.mjs --live
 ```
 
-The UI check exercises controls, navigation, decimal precision and demo isolation. The worker check uses a disposable Chromium profile to exercise the bundled worker, IndexedDB vault, QR encoding and session locking. Set `CHROMIUM` to your Chromium executable if it is outside `/usr/bin`. The live check creates a fresh throwaway Preview wallet and waits for balances and history. Neither check needs funded coins. Open the desktop demo with `godot --path android/ui`.
+The UI check drives every screen through a stand-in for the Android bridge and checks controls, navigation and decimal precision; set `MDWA_TEST_VIEWPORT=744x820` to check the unfolded layout. The worker check uses a disposable Chromium profile to exercise the bundled worker, IndexedDB vault, QR encoding, session locking, password change and erase. Set `CHROMIUM` to your Chromium executable if it is outside `/usr/bin`. The live check creates a fresh throwaway Preview wallet and waits for balances and history. Neither check needs funded coins.
 
 To test the packaged worker and both proof ports with a hardware Vulkan GPU on the build host, run
 
@@ -64,6 +68,8 @@ cargo test --locked --release --manifest-path android/prover/Cargo.toml --test v
 ```
 
 ### Device verification
+
+These measurements were taken on earlier builds, which had a **Test local prover** button and a bundled test dApp. The proof check they used remains available to `check-worker.mjs --proof`.
 
 On a Samsung SM-F976U (Adreno 840), three native provers processed the same serialized shielded-output request. Each ran once in a fresh process and five more times in that process, with the order rotating each round. Timings include proving and internal verification. They exclude material downloads, USB transfer and independent verification by the stock ledger-v9 verifier. All 18 proofs passed. Android reported thermal status 0 before and after the comparison.
 

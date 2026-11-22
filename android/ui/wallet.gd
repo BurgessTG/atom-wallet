@@ -9,7 +9,7 @@ extends Control
 const D = preload("res://design.gd")
 const M = preload("res://model.gd")
 const ATOM = preload("res://atom.gdshader")
-const VERSION := "0.3.0"
+const VERSION := "0.4.0"
 var prefs_path := "user://prefs.cfg"
 const WIDE := 600.0
 
@@ -122,13 +122,13 @@ const CHAINS := [
 ]
 const DRAWERS := ["send", "receive", "choose_token", "review", "preparing"]
 const TABS := ["home", "activity", "explore"]
-const SETTINGS_PAGES := ["settings", "network", "connections", "proving", "rescan", "remove"]
+const SETTINGS_PAGES := ["settings", "network", "connections", "proving", "password", "rescan", "remove"]
 const DEPTH := {
-	"welcome": 0, "unlock": 0, "restore": 1, "phrase": 1, "verify": 2, "create": 3,
+	"welcome": 0, "unlock": 0, "forgot": 1, "restore": 1, "phrase": 1, "verify": 2, "create": 3,
 	"home": 0, "activity": 0, "explore": 0, "settings": 0,
 	"detail": 1, "dust": 1, "token_label": 1, "browser": 1, "chain": 2,
 	"dust_review": 2, "working": 2, "sent": 3,
-	"network": 1, "connections": 2, "proving": 1, "rescan": 1, "remove": 1,
+	"network": 1, "connections": 2, "proving": 1, "password": 1, "rescan": 1, "remove": 1,
 }
 
 # ------------------------------------------------------------------ setup ---
@@ -406,7 +406,7 @@ func back() -> void:
 		"send", "receive", "preparing": close_drawer()
 		"review": go("send")
 		"choose_token": go("send")
-		"network", "proving", "rescan", "remove":
+		"network", "proving", "password", "rescan", "remove":
 			go("settings" if authed() else ("unlock" if live_state.get("hasWallet") else "welcome"))
 		"connections": go("network")
 		"settings": go(settings_return)
@@ -421,6 +421,7 @@ func back() -> void:
 		"verify": go("phrase")
 		"create": go("verify")
 		"restore", "phrase": go("welcome")
+		"forgot": go("unlock")
 		"welcome", "unlock", "home": get_tree().quit()
 		_: go("home")
 
@@ -855,6 +856,7 @@ func build_main(main_page: String, transition: String) -> void:
 	scroll = main_scroll
 	match main_page:
 		"welcome", "unlock": welcome()
+		"forgot": forgot_page()
 		"phrase": phrase_page()
 		"verify": verify_page()
 		"create", "restore": password_page()
@@ -871,6 +873,7 @@ func build_main(main_page: String, transition: String) -> void:
 		"network": network_page()
 		"connections": connections_page()
 		"proving": proving_page()
+		"password": change_password_page()
 		"rescan": rescan_page()
 		"remove": remove_page()
 	if is_instance_valid(old):
@@ -1152,8 +1155,11 @@ func welcome() -> void:
 			command("unlock", {"password": pw.text}, func(_result): pass, "Unlocking…")
 		D.button(parent, "Unlock", submit, "secondary" if biometric.get("enabled") else "primary", "lock")
 		pw.text_submitted.connect(func(_s): submit.call())
-		var other := D.row(parent, 8)
-		D.chip(other, chain_name() + " · switch chain", func(): navigate("network"), false, "chain")
+		var other := HFlowContainer.new()
+		other.add_theme_constant_override("h_separation", 8)
+		parent.add_child(other)
+		D.chip(other, chain_name(), func(): navigate("network"), false, "chain")
+		D.chip(other, "Forgot password?", func(): navigate("forgot"))
 		return
 	var ready := not live_state.is_empty()
 	if not bridge:
@@ -1182,6 +1188,32 @@ func welcome() -> void:
 		D.button(parent, "I already have a wallet", func(): restore_text = ""; go("restore"), "secondary", "key")
 		var other := D.row(parent, 8)
 		D.chip(other, chain_name(), func(): navigate("network"), false, "chain")
+
+# A forgotten password cannot be recovered: the wallet is erased and restored
+# from its recovery phrase under a new one.
+func forgot_page() -> void:
+	heading("Forgot your password?", "", true)
+	D.label(body, "Atom Wallet can't recover or reset a password. Erase the %s wallet from this phone, then restore it with your recovery phrase and choose a new password." % chain_name(), 14, D.MUTED, 480, true)
+	var warn := D.panel(body, Color(D.DANGER, 0.08), 16, Color.TRANSPARENT)
+	var wr := D.row(D.inset(warn, 14, 12), 10)
+	D.icon(wr, "info", D.DANGER, 20)
+	D.label(wr, "Without the recovery phrase, everything in this wallet is lost for good.", 13, D.DANGER, 560, true).size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	D.hold_button(body, "Hold to erase wallet", func():
+		command("eraseWallet", {"confirm": "erase"}, func(_r):
+			native("disableBiometric", [network()])
+			refresh_biometric()
+			show_toast("Wallet erased")
+		, "Erasing…")
+	, "trash")
+	D.button(body, "Keep my wallet", back, "secondary", "back")
+
+func strength_label(parent: Control, pw: LineEdit) -> void:
+	var strength := D.label(parent, "", 12, D.MUTED, 560)
+	pw.text_changed.connect(func(v: String):
+		var score := int(v.length() >= 8) + int(v.length() >= 12) + int(v.to_lower() != v and v.to_upper() != v) + int(has_any(v, "0123456789")) + int(has_any(v, "!@#$%^&*()-_=+[]{};:,.<>/?~ "))
+		strength.text = "" if v.is_empty() else ["Too short", "Weak", "Fair", "Good", "Strong", "Very strong"][score if v.length() >= 8 else 0]
+		strength.add_theme_color_override("font_color", D.DANGER if score < 2 or v.length() < 8 else (D.AMBER if score < 4 else D.MINT))
+	)
 
 func biometric_unlock() -> void:
 	if busy or page != "unlock": return
@@ -1332,12 +1364,7 @@ func password_page() -> void:
 	D.caption(body, "Password")
 	var pw := D.field(body, "At least 8 characters", true)
 	var confirm := D.field(body, "Confirm password", true)
-	var strength := D.label(body, "", 12, D.MUTED, 560)
-	pw.text_changed.connect(func(v: String):
-		var score := int(v.length() >= 8) + int(v.length() >= 12) + int(v.to_lower() != v and v.to_upper() != v) + int(has_any(v, "0123456789")) + int(has_any(v, "!@#$%^&*()-_=+[]{};:,.<>/?~ "))
-		strength.text = "" if v.is_empty() else ["Too short", "Weak", "Fair", "Good", "Strong", "Very strong"][score if v.length() >= 8 else 0]
-		strength.add_theme_color_override("font_color", D.DANGER if score < 2 or v.length() < 8 else (D.AMBER if score < 4 else D.MINT))
-	)
+	strength_label(body, pw)
 	if biometric.get("available"):
 		var bio := D.list(body)
 		var r := D.list_row(bio, "Use biometrics to unlock", func(): pass, false)
@@ -2270,20 +2297,22 @@ func settings_page() -> void:
 	sec.move_child(sec.get_child(-1), sec.get_child_count() - 2)
 	var lh := D.row(lock_card, 12)
 	D.badge(lh, "lock", D.ACCENT)
-	D.text_column(lh, "Auto-lock", "When Atom Wallet leaves the screen")
-	D.segmented(lock_card, [[0, "Immediately"], [60, "1 min"], [300, "5 min"]], int(prefs.auto_lock), func(v):
+	D.text_column(lh, "Auto-lock", "After you leave the app")
+	D.segmented(lock_card, [[0, "At once"], [60, "1 min"], [300, "5 min"]], int(prefs.auto_lock), func(v):
 		save_pref("auto_lock", int(v))
 		native("setAutoLock", [int(v)])
 		redraw_at_scroll())
 	D.divider(sec, 64)
+	link_row(sec, "key", "Change password", "", navigate.bind("password"))
+	D.divider(sec, 64)
 	link_row(sec, "lock", "Lock now", "", func(): command("lock", {}, func(_v): pass, "Locking…"))
 	D.label(right, "Display", 13, D.MUTED, 620)
 	var disp := D.list(right)
-	toggle_row(disp, "eyeoff", "Hide balances on open", "Tap the eye to show them", prefs.hide_balances, func(on): save_pref("hide_balances", on))
+	toggle_row(disp, "eyeoff", "Hide balances", "When the app opens", prefs.hide_balances, func(on): save_pref("hide_balances", on))
 	toggle_row(disp, "bolt", "Haptic feedback", "Ticks and confirmations", prefs.haptics, func(on): save_pref("haptics", on))
 	D.label(right, "Advanced", 13, D.MUTED, 620)
 	var adv := D.list(right)
-	toggle_row(adv, "code", "Developer mode", "Transaction lookup and proof timings", prefs.developer, func(on):
+	toggle_row(adv, "code", "Developer mode", "Lookup and proof timings", prefs.developer, func(on):
 		save_pref("developer", on)
 		show_toast("Developer mode " + ("on" if on else "off")))
 	link_row(adv, "refresh", "Rescan wallet", "Rebuild balances and history", navigate.bind("rescan"))
@@ -2306,7 +2335,7 @@ func biometric_setup() -> void:
 	D.button(card, "Continue", func():
 		if pw.text.length() < 8: notice("Enter your wallet password."); return
 		var password := pw.text
-		command("unlock", {"password": password}, func(_r):
+		command("checkPassword", {"password": password}, func(_r):
 			native("enableBiometric", [network(), password])
 		, "Checking password…")
 	, "primary", "finger")
@@ -2376,6 +2405,31 @@ func proving_page() -> void:
 		server.text = prover.get("url", "")
 		server.text_changed.connect(func(v): prover.url = v.strip_edges())
 	D.button(body, "Save proving", save_config, "primary", "check")
+
+func change_password_page() -> void:
+	heading("Change password", "For the %s wallet on this phone. Your recovery phrase stays the same." % chain_name(), true)
+	D.caption(body, "Current password")
+	var current := D.field(body, "Current password", true)
+	D.caption(body, "New password")
+	var pw := D.field(body, "At least 8 characters", true)
+	var confirm := D.field(body, "Confirm new password", true)
+	strength_label(body, pw)
+	D.button(body, "Change password", func():
+		if current.text.is_empty(): notice("Enter your current password."); return
+		if pw.text.length() < 8 or pw.text != confirm.text: notice("Enter matching new passwords of at least 8 characters."); return
+		if pw.text == current.text: notice("Choose a password that differs from the current one."); return
+		var next := pw.text
+		# Biometric unlock holds the old password: seal the new one in its place.
+		var rebind: bool = biometric.get("enabled", false)
+		command("changePassword", {"password": current.text, "next": next}, func(_r):
+			if rebind:
+				native("disableBiometric", [network()])
+				native("enableBiometric", [network(), next])
+			D.buzz("success")
+			show_toast("Password changed")
+			go("settings")
+		, "Changing password…")
+	, "primary", "check")
 
 func rescan_page() -> void:
 	heading("Rescan", "Rebuild balances and activity from " + chain_name() + ".", true)

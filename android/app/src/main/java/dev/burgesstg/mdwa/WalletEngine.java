@@ -100,7 +100,7 @@ public final class WalletEngine extends GodotPlugin {
 
     @UsedByGodot public void request(String json) {
         runOnHostThread(() -> {
-            if (requests != null && active) requests.postMessage(new WebMessage(json));
+            if (requests != null) requests.postMessage(new WebMessage(json));
         });
     }
 
@@ -188,14 +188,26 @@ public final class WalletEngine extends GodotPlugin {
                 requests.setWebMessageCallback(new WebMessagePort.WebMessageCallback() {
                     private boolean connected;
 
+                    // Replies keep flowing while the app is in the background, so a
+                    // transaction that finishes there is not lost to the UI.
                     @Override public void onMessage(WebMessagePort port, WebMessage message) {
-                        if (!active || engineView != v || message.getData() == null) return;
-                        if (!connected && message.getData().startsWith("{\"type\":\"state\"")) {
+                        String data = message.getData();
+                        if (engineView != v || data == null) return;
+                        boolean state = data.startsWith("{\"type\":\"state\"");
+                        if (state && !connected) {
                             connected = true;
                             android.util.Log.i("MDWA", "Wallet worker ready");
                         }
                         main.removeCallbacks(bootTimeout);
-                        emitSignal("message", message.getData());
+                        emitSignal("message", data);
+                        // JSON escapes quotes inside strings, so this text is only ever the idle busy slot.
+                        boolean now = state ? !data.contains("\"busy\":null") : transacting;
+                        if (now == transacting) return;
+                        transacting = now;
+                        if (!active) {
+                            main.removeCallbacks(lockNow);
+                            main.postDelayed(lockNow, Math.max(0, lockWait()));
+                        }
                     }
                 });
                 v.postWebMessage(new WebMessage("connect", new WebMessagePort[]{pair[1], proofs[1]}), ORIGIN);
@@ -247,6 +259,14 @@ public final class WalletEngine extends GodotPlugin {
 
     // Seconds the worker stays unlocked after the app leaves the screen.
     private volatile int autoLockSeconds;
+    // A transaction that is proving or submitting gets this long to finish in the background.
+    private static final long TRANSACTION_GRACE_MS = 3 * 60 * 1000L;
+    private boolean transacting;
+    private long pausedAt;
+    private long lockWait() {
+        long keep = Math.max(autoLockSeconds * 1000L, transacting ? TRANSACTION_GRACE_MS : 0);
+        return keep - (android.os.SystemClock.elapsedRealtime() - pausedAt);
+    }
     private final Runnable lockNow = () -> {
         if (active) return;
         close();
@@ -269,6 +289,7 @@ public final class WalletEngine extends GodotPlugin {
         requests = null;
         if (prover != null) prover.close();
         prover = null;
+        transacting = false;
         if (engineView == null) return;
         WebView view = engineView;
         engineView = null;
@@ -276,13 +297,16 @@ public final class WalletEngine extends GodotPlugin {
         view.destroy();
     }
 
-    // Ending the worker drops all in-memory keys. With an auto-lock delay the
-    // worker keeps running in the background until the delay passes.
+    // Ending the worker drops all in-memory keys. With an auto-lock delay, or
+    // while a transaction is in flight, the worker keeps running in the
+    // background until the delay passes.
     @Override public void onMainPause() {
         active = false;
+        pausedAt = android.os.SystemClock.elapsedRealtime();
         main.removeCallbacks(lockNow);
-        if (autoLockSeconds <= 0) lockNow.run();
-        else main.postDelayed(lockNow, autoLockSeconds * 1000L);
+        long wait = lockWait();
+        if (wait <= 0) lockNow.run();
+        else main.postDelayed(lockNow, wait);
     }
     @Override public void onMainResume() {
         main.removeCallbacks(lockNow);

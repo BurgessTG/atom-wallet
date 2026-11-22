@@ -5,6 +5,8 @@ import qrcode from 'qrcode-generator';
 window.addEventListener('message', ({ ports }) => {
   const port = ports[0];
   if (!port) return;
+  // The vault lives in IndexedDB: ask the WebView not to evict it when storage runs low.
+  navigator.storage?.persist?.().catch(() => {});
   const worker = new Worker('/android-engine.js', { type: 'module' });
   const reply = value => port.postMessage(JSON.stringify(value, (_, v) => typeof v === 'bigint' ? v.toString() : v));
   const prover = ports[1];

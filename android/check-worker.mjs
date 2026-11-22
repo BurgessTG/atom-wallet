@@ -117,7 +117,23 @@ try {
     return { wrong: !!wrong.error, right: right.result?.addresses.unshielded, locked: locked.result?.locked };
   });
   assert.deepEqual(unlock, { wrong: true, right: created.address, locked: true });
-  console.log('Wallet worker passed create/restore, address validation, QR, reload, unlock and lock.');
+  const password = await page.evaluate(async () => {
+    const wrong = await window.ask('changePassword', { password: 'incorrect-password', next: 'another-test-password' });
+    const short = await window.ask('changePassword', { password: 'temporary-test-password', next: 'short' });
+    const changed = await window.ask('changePassword', { password: 'temporary-test-password', next: 'another-test-password' });
+    const old = await window.ask('unlock', { password: 'temporary-test-password' });
+    const fresh = await window.ask('unlock', { password: 'another-test-password' });
+    const unlockedErase = await window.ask('eraseWallet', { confirm: 'erase' });
+    await window.ask('lock', {});
+    const unconfirmed = await window.ask('eraseWallet', {});
+    const erased = await window.ask('eraseWallet', { confirm: 'erase' });
+    return { wrong: !!wrong.error, short: !!short.error, changed: !changed.error, old: !!old.error,
+      fresh: fresh.result?.addresses.unshielded, unlockedErase: !!unlockedErase.error,
+      unconfirmed: !!unconfirmed.error, erased: erased.result?.hasWallet };
+  });
+  assert.deepEqual(password, { wrong: true, short: true, changed: true, old: true, fresh: created.address,
+    unlockedErase: true, unconfirmed: true, erased: false });
+  console.log('Wallet worker passed create/restore, address validation, QR, reload, unlock, lock, password change and erase.');
 } finally {
   await browser?.close();
   server.close();

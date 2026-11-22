@@ -521,6 +521,33 @@ async function resetWallet({ password }) {
   return snapshot();
 }
 
+/** Seals the seed again under a new password. Records are encrypted with a
+ *  key derived from the seed, so snapshots and history stay readable. */
+async function changePassword({ password, next }) {
+  const w = await wallet();
+  const seedHex = await vault.open(w.sealed, password);   // throws Wrong password
+  const sealed = await vault.seal(seedHex, next);          // throws on a short password
+  await store.put('wallet', { ...w, sealed });
+  return {};
+}
+
+/**
+ * Removes the selected network's wallet without its password, for a user
+ * who has forgotten it: only the recovery phrase brings the wallet back.
+ * An unlocked wallet is removed with its password instead (resetWallet).
+ */
+async function eraseWallet({ confirm } = {}) {
+  await wallet();
+  if (!state.locked) throw new Error('Remove an unlocked wallet with its password');
+  if (confirm !== 'erase') throw new Error('Confirm erasing the wallet');
+  await stopSession({ save: false });
+  await store.clear();
+  unlocked.delete(store.network);
+  await reflect();
+  publish();
+  return snapshot();
+}
+
 /**
  * Syncs the wallet again without its snapshot. The shielded wallet starts at
  * the wallet birthday again; with `fromStart` the birthday is removed first,
@@ -593,8 +620,10 @@ async function saveSettings({ network, endpoints }) {
 const ui = {
   ...(globalThis.mdwaNativeProof ? { checkAndroidProver: midnight.checkAndroidProver } : {}),
   state: async () => snapshot(),
+  // Checks a password against the vault without changing what is unlocked.
+  checkPassword: async ({ password }) => { await vault.open((await wallet()).sealed, password); return {}; },
   generateMnemonic: async () => ({ words: midnight.generateMnemonic() }),
-  createWallet, unlock, lock, selectNetwork, resetWallet, rescan, saveSettings,
+  createWallet, unlock, lock, selectNetwork, resetWallet, changePassword, eraseWallet, rescan, saveSettings,
   // Token names (tokens.js): labels are read from the selected network's
   // database whether or not it is unlocked; watchToken asks its indexer.
   ...tokens.uiMethods({
