@@ -236,6 +236,7 @@ public final class WalletEngine extends GodotPlugin {
     @UsedByGodot public void hideExplorer() { runOnHostThread(() -> { if (explorer != null) explorer.hide(); }); }
     @UsedByGodot public void closeExplorer() { runOnHostThread(() -> { if (explorer != null) explorer.close(); }); }
     @UsedByGodot public void reloadExplorer() { runOnHostThread(() -> { if (explorer != null) explorer.reload(); }); }
+    @UsedByGodot public void explorerForward() { runOnHostThread(() -> { if (explorer != null) explorer.forward(); }); }
     @UsedByGodot public boolean explorerBack() {
         if (explorer == null || !explorer.canGoBack()) return false;
         runOnHostThread(() -> { if (explorer != null) explorer.back(); });

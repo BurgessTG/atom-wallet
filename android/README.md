@@ -12,7 +12,7 @@ The header shows the atom, the chain chip (tap it to switch chains), the eye tha
 
 **Wallet** shows available NIGHT, shielded and unshielded assets, DUST generation and recent activity. **Send** takes one shielded or unshielded recipient per transfer: choose an asset, paste or scan an address, enter an amount and review the DUST fee. **Scan** reads a QR address or `midnight:` link with the Google Play services code scanner. **Receive** shows, copies and shares the private or public address with its QR code. Tap **DUST** to register NIGHT for generation or stop it. Tap a custom asset to give it a name, symbol and decimal places. Sends and DUST changes are confirmed by pressing and holding.
 
-**Activity** groups transactions by day; open one for its amounts, block, hash, recorded step timings and a link to the block explorer. **Explore** opens the chain's block explorer in the app and, on Preview and Preprod, the faucet.
+**Activity** groups transactions by day; open one for its amounts, block, hash, recorded step timings and a link to the block explorer. **Explore** is a browser: type an address or a search in the bar, or open a suggested link (the chain's block explorer and, on Preview and Preprod, the faucet). It has back, forward, reload, share and open-in-default-browser controls and opens any HTTPS site. The browser runs in its own WebView with no connection to the wallet: it cannot load the wallet engine's origin, plain HTTP is upgraded to HTTPS, and camera, location, file access and downloads are off. Sites cannot connect to the wallet or request transactions.
 
 **Settings** holds:
 

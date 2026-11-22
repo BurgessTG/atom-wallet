@@ -9,7 +9,7 @@ extends Control
 const D = preload("res://design.gd")
 const M = preload("res://model.gd")
 const ATOM = preload("res://atom.gdshader")
-const VERSION := "0.4.0"
+const VERSION := "0.5.0"
 var prefs_path := "user://prefs.cfg"
 const WIDE := 600.0
 
@@ -48,7 +48,10 @@ var clocks: Array = []
 var clock_timer: Timer
 var explorer_url := ""
 var browser_bounds: Control
-var browser_location: Label
+var browser_field: LineEdit
+var browser_fill: ColorRect
+var browser_nav := {}
+var browser_state := {}
 var browser_return := "explore"
 var browser_requested := ""
 var browser_error := ""
@@ -120,6 +123,8 @@ const CHAINS := [
 	["preprod", "Preprod", "Test network that mirrors Mainnet"],
 	["mainnet", "Mainnet", "Real NIGHT and DUST"],
 ]
+const SEARCH := "https://duckduckgo.com/?q="
+const BROWSER_TOOLS := 58
 const DRAWERS := ["send", "receive", "choose_token", "review", "preparing"]
 const TABS := ["home", "activity", "explore"]
 const SETTINGS_PAGES := ["settings", "network", "connections", "proving", "password", "rescan", "remove"]
@@ -236,10 +241,15 @@ func _message(raw: String) -> void:
 			if page in ["working", "sent"]: redraw_at_scroll()
 		"browser":
 			if page == "browser":
-				explorer_url = str(msg.get("url", explorer_url))
 				browser_error = str(msg.get("error", ""))
-				if is_instance_valid(browser_location): browser_location.text = url_label(explorer_url)
 				notice(browser_error)
+				if msg.has("url"):
+					explorer_url = str(msg.url)
+					browser_state = msg
+				elif browser_error:
+					browser_state = {}
+				update_browser()
+				if msg.get("notice"): show_toast(str(msg.notice))
 		"scan":
 			if msg.get("value"): use_scanned(str(msg.value))
 			elif msg.get("error"): show_toast(str(msg.error))
@@ -351,7 +361,7 @@ func wipe() -> void:
 	chain_hash = ""; chain_receipt = {}; watching_hash = ""; lookup_generation += 1
 	config = {}
 	config_draft = {}
-	explorer_url = ""; browser_requested = ""; browser_error = ""
+	explorer_url = ""; browser_requested = ""; browser_error = ""; browser_state = {}
 	drawer_owner = "home"
 	balances_hidden = prefs.hide_balances
 	if native_explorer(): bridge.closeExplorer()
@@ -803,7 +813,7 @@ func draw_page(transition := "none") -> void:
 	clocks.clear()
 	clock_timer.stop()
 	status_line = null; phrase_grid = null; dust_balance_label = null
-	browser_bounds = null; browser_location = null
+	browser_bounds = null; browser_field = null; browser_fill = null; browser_nav = {}
 	ensure_shell()
 	build_header()
 	update_nav()
@@ -2151,6 +2161,15 @@ func DANGER_TEXT() -> Color:
 
 func explore_page() -> void:
 	heading("Explore")
+	var bar := D.row(body, 8)
+	var bar_field := D.field(bar, "Search or enter address")
+	bar_field.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	bar_field.virtual_keyboard_type = LineEdit.KEYBOARD_TYPE_URL
+	bar_field.context_menu_enabled = true
+	bar_field.accessibility_name = "Address"
+	bar_field.text_submitted.connect(browse)
+	D.button(bar, "Go", func(): browse(bar_field.text), "primary", "next", true).size_flags_horizontal = Control.SIZE_SHRINK_END
+	D.section(body, "Suggested")
 	var group := D.list(body)
 	explore_link(group, "globe", "Block explorer", "Midnight " + chain_name(), open_browser.bind(EXPLORERS.get(network(), EXPLORERS.preview), "explore"))
 	if FAUCETS.has(network()):
@@ -2214,39 +2233,107 @@ func chain_page() -> void:
 func open_browser(url: String, origin: String) -> void:
 	if busy: return
 	browser_return = origin
-	explorer_url = url; browser_requested = url; browser_error = ""
+	explorer_url = url; browser_requested = url; browser_error = ""; browser_state = {}
 	go("browser")
-
-func url_label(url: String) -> String:
-	return url.trim_prefix("https://").get_slice("/", 0)
 
 func native_explorer() -> bool:
 	return bridge != null and Engine.has_singleton("WalletEngine")
 
+# What the address bar opens: an address is loaded over HTTPS, anything else is searched for.
+func browser_target(text: String) -> String:
+	var t := text.strip_edges()
+	if t.is_empty(): return ""
+	var lower := t.to_lower()
+	if lower.begins_with("https://"): return t
+	if lower.begins_with("http://"): return "https://" + t.substr(7)
+	if not t.contains(" ") and t.contains(".") and not t.begins_with(".") and not t.ends_with("."): return "https://" + t
+	return SEARCH + t.uri_encode()
+
+func browse(text: String) -> void:
+	var url := browser_target(text)
+	if url.is_empty(): return
+	if DisplayServer.has_feature(DisplayServer.FEATURE_VIRTUAL_KEYBOARD): DisplayServer.virtual_keyboard_hide()
+	if page != "browser":
+		open_browser(url, "explore")
+		return
+	explorer_url = url; browser_requested = url; browser_error = ""
+	notice("")
+	if is_instance_valid(browser_field):
+		browser_field.release_focus()
+		browser_field.text = url
+	place_browser()
+
+# The address bar and the controls are drawn here; on Android the page itself
+# is a native WebView laid over `browser_bounds`.
 func browser_page(host: Control) -> void:
 	var native_ := native_explorer()
 	var bar := D.row(body, 6)
-	D.button(bar, "Back to wallet screen", func(): go(browser_return), "ghost", "back", true).size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
-	var pillbox := D.panel(bar, Color(1, 1, 1, 0.05), 99, D.LINE)
-	pillbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	var pr := D.row(D.inset(pillbox, 14, 9), 6)
-	D.icon(pr, "lock", D.MINT, 14)
-	browser_location = D.label(pr, url_label(explorer_url), 14, D.INK, 560)
-	browser_location.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
-	browser_location.clip_text = true
-	browser_location.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	if native_: D.button(bar, "Reload", func(): bridge.reloadExplorer(), "ghost", "refresh", true).size_flags_horizontal = Control.SIZE_SHRINK_END
+	D.button(bar, "Close browser", func(): go(browser_return), "ghost", "close", true).size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
+	browser_field = D.field(bar, "Search or enter address")
+	browser_field.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	browser_field.virtual_keyboard_type = LineEdit.KEYBOARD_TYPE_URL
+	browser_field.select_all_on_focus = true
+	browser_field.context_menu_enabled = true
+	browser_field.accessibility_name = "Address"
+	browser_field.text = explorer_url
+	browser_field.text_submitted.connect(browse)
+	var reload := D.button(bar, "Reload", func(): if native_explorer(): bridge.reloadExplorer(), "ghost", "refresh", true)
+	reload.size_flags_horizontal = Control.SIZE_SHRINK_END
+	var extras := []
+	var track := Control.new()
+	track.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	host.add_child(track)
+	track.set_anchors_and_offsets_preset(Control.PRESET_TOP_WIDE)
+	track.offset_top = 64; track.offset_bottom = 66
+	browser_fill = ColorRect.new()
+	browser_fill.color = D.ACCENT
+	browser_fill.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	track.add_child(browser_fill)
+	browser_fill.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	extras.append(track)
+	var tools := D.panel(host, Color(0.08, 0.075, 0.13, 0.96), 0, Color.TRANSPARENT)
+	tools.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_WIDE)
+	tools.offset_top = -BROWSER_TOOLS; tools.offset_bottom = 0
+	var tr := D.row(D.inset(tools, 12, 4), 0)
+	browser_nav = {}
+	for item in [["back", "Go back", "back", func(): if native_explorer(): bridge.explorerBack()],
+			["forward", "Go forward", "next", func(): if native_explorer(): bridge.explorerForward()],
+			["share", "Share page", "share", func(): if explorer_url: share(explorer_url)],
+			["external", "Open in default browser", "globe", func(): if explorer_url: OS.shell_open(explorer_url)]]:
+		var b := D.button(tr, item[1], item[3], "ghost", item[2], true)
+		browser_nav[item[0]] = b
+	extras.append(tools)
+	browser_bounds = Control.new()
+	host.add_child(browser_bounds)
+	browser_bounds.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	browser_bounds.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	browser_bounds.offset_top = 68; browser_bounds.offset_bottom = -BROWSER_TOOLS
+	extras.append(browser_bounds)
+	main_scroll.tree_exiting.connect(func():
+		for node in extras:
+			if is_instance_valid(node): node.queue_free())
+	update_browser()
 	if native_:
-		browser_bounds = Control.new()
-		host.add_child(browser_bounds)
-		browser_bounds.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		browser_bounds.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-		browser_bounds.offset_top = 68
 		browser_bounds.resized.connect(place_browser.call_deferred)
-		main_scroll.tree_exiting.connect(func(): if is_instance_valid(browser_bounds): browser_bounds.queue_free())
 		place_browser.call_deferred()
 	else:
-		D.button(body, "Open in browser", func(): OS.shell_open(explorer_url), "secondary", "globe")
+		var note := D.vbox(browser_bounds, 6)
+		note.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+		note.alignment = BoxContainer.ALIGNMENT_CENTER
+		var c := CenterContainer.new(); note.add_child(c)
+		D.icon(c, "globe", D.DIM, 34)
+		D.label(note, "Pages open here in the Android app", 14, D.MUTED, 520).horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+
+func update_browser() -> void:
+	if is_instance_valid(browser_field) and not browser_field.has_focus() and browser_field.text != explorer_url:
+		browser_field.text = explorer_url
+	if is_instance_valid(browser_fill):
+		browser_fill.visible = browser_state.get("loading", false)
+		browser_fill.anchor_right = clampf(float(browser_state.get("progress", 0)) / 100.0, 0.08, 1.0)
+	for key in ["back", "forward"]:
+		if is_instance_valid(browser_nav.get(key)): browser_nav[key].disabled = not browser_state.get(key, false)
+	for key in ["share", "external"]:
+		if is_instance_valid(browser_nav.get(key)): browser_nav[key].disabled = explorer_url.is_empty()
 
 func place_browser() -> void:
 	if page != "browser" or not is_instance_valid(browser_bounds) or not native_explorer(): return
